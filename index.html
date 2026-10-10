@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>波撮りカメラ</title>
+<meta name="theme-color" content="#06202e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: #06202e; color: #e8f4f8;
+    font-family: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  body { padding: 12px 12px calc(24px + env(safe-area-inset-bottom)); max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 4px 0 10px; display: flex; align-items: center; gap: 8px; }
+  h1 .ver { font-size: 11px; font-weight: normal; color: #7fa6b5; border: 1px solid #2c5566;
+    border-radius: 10px; padding: 1px 8px; }
+  h2 { font-size: 16px; margin: 22px 0 8px; color: #8fd3ea; }
+
+  /* カメラの映像 */
+  #videoWrap { position: relative; background: #000; border-radius: 12px; overflow: hidden;
+    aspect-ratio: 16 / 9; border: 3px solid #12394b; }
+  #videoWrap.rec { border-color: #e5484d; }
+  #preview { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #recBadge { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.6); color: #fff;
+    font-weight: bold; font-size: 14px; padding: 3px 10px; border-radius: 14px; display: none; }
+  #recBadge.on { display: block; }
+  #recBadge::before { content: "●"; color: #e5484d; margin-right: 5px; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  #camMsg { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 12px; padding: 16px; text-align: center; font-size: 15px;
+    background: rgba(0,0,0,.75); }
+  #camMsg[hidden] { display: none; }
+
+  /* 経過時間 */
+  #elapsed { font-size: 56px; font-weight: bold; text-align: center; letter-spacing: 2px;
+    font-variant-numeric: tabular-nums; margin: 10px 0 2px; line-height: 1.1; }
+  #status { text-align: center; font-size: 14px; color: #a9c9d6; min-height: 20px; }
+  #status.warn { color: #ffb84d; font-weight: bold; }
+
+  button { font: inherit; color: inherit; border: none; border-radius: 12px; cursor: pointer; }
+  #btnRec { width: 100%; padding: 18px; font-size: 22px; font-weight: bold; margin-top: 12px;
+    background: #e5484d; color: #fff; }
+  #btnRec.recording { background: #33414a; border: 2px solid #e5484d; }
+  #btnRec:disabled { opacity: .45; }
+  #btnDim { width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; background: #12394b; display: none; }
+  #btnDim.show { display: block; }
+
+  .info { font-size: 13px; color: #a9c9d6; margin-top: 8px; line-height: 1.7; }
+  .info b { color: #e8f4f8; }
+
+  /* 設定 */
+  .set { background: #0b2c3b; border-radius: 12px; padding: 12px; }
+  .set label { display: block; font-size: 14px; margin: 10px 0 4px; }
+  .set label:first-child { margin-top: 0; }
+  .set select, .set input[type=range] { width: 100%; font: inherit; }
+  .set select { padding: 10px; border-radius: 8px; background: #06202e; color: #e8f4f8; border: 1px solid #2c5566; }
+  .set .chk { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .set .chk input { width: 22px; height: 22px; }
+  .note { font-size: 12px; color: #7fa6b5; margin-top: 3px; line-height: 1.5; }
+
+  /* 手順 */
+  ol.steps { margin: 0; padding-left: 22px; font-size: 14px; line-height: 1.8; }
+  ol.steps b { color: #ffd479; }
+
+  /* 録画の一覧 */
+  .sess { background: #0b2c3b; border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+  .sess .ttl { font-size: 16px; font-weight: bold; }
+  .sess .sub { font-size: 13px; color: #a9c9d6; margin: 2px 0 8px; }
+  .sess .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sess .btns button { flex: 1 1 110px; padding: 11px 6px; font-size: 15px; background: #12506a; }
+  .sess .btns button.del { background: #3a2a2d; flex: 0 0 64px; }
+  .sess textarea { width: 100%; min-height: 96px; margin-top: 10px; font: inherit; font-size: 16px;
+    background: #06202e; color: #e8f4f8; border: 1px solid #2c5566; border-radius: 8px; padding: 8px; }
+  .sess .files { margin-top: 8px; font-size: 13px; }
+  .sess .files div { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #12394b; }
+  .sess .files span { flex: 1; }
+  .sess .files button { padding: 6px 12px; background: #12394b; font-size: 14px; }
+  #empty { font-size: 14px; color: #7fa6b5; }
+
+  /* カウントダウン・暗い画面・再生 */
+  .cover { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center;
+    flex-direction: column; text-align: center; padding: 20px; }
+  .cover.show { display: flex; }
+  #countCover { background: rgba(0,0,0,.88); }
+  #countNum { font-size: 180px; font-weight: bold; line-height: 1; }
+  #countMsg { font-size: 20px; margin-top: 16px; line-height: 1.6; }
+  #dimCover { background: #000; color: #3a3a3a; }
+  #dimTime { font-size: 40px; font-variant-numeric: tabular-nums; }
+  #dimMsg { font-size: 14px; margin-top: 12px; }
+  #playCover { background: rgba(0,0,0,.94); }
+  #playVideo { max-width: 100%; max-height: 78vh; }
+  #playClose { margin-top: 12px; padding: 12px 40px; background: #12506a; font-size: 16px; }
+</style>
+</head>
+<body>
+
+<h1>🌊 波撮りカメラ <span class="ver" id="verBadge"></span></h1>
+
+<div id="videoWrap">
+  <video id="preview" muted playsinline autoplay></video>
+  <div id="recBadge">録画中</div>
+  <div id="camMsg">
+    <div id="camMsgText">カメラを準備しています…</div>
+    <button id="btnCam" style="padding:12px 24px;background:#12506a;font-size:16px" hidden>カメラを起動する</button>
+  </div>
+</div>
+
+<div id="elapsed">0:00:00</div>
+<div id="status"></div>
+
+<button id="btnRec" disabled>● 録画スタート</button>
+<button id="btnDim">🌙 画面を暗くする（電池と熱の節約）</button>
+
+<div class="info" id="info"></div>
+
+<h2>海での使い方</h2>
+<ol class="steps">
+  <li>スマホを<b>横向き</b>に置いて、海が映るように向きを決める</li>
+  <li>時計のストップウォッチを<b>リセット</b>しておく</li>
+  <li>「録画スタート」を押す → 3・2・1のあと<b>「ピー」と同時に時計をスタート</b></li>
+  <li>波に乗り終わったら、時計の<b>ラップボタン</b>を1回押す</li>
+  <li>上がったら録画を止めて、下の一覧にラップを書き写す</li>
+</ol>
+
+<h2>設定</h2>
+<div class="set">
+  <label for="selQuality">画質</label>
+  <select id="selQuality">
+    <option value="fhd">ふつう（フルHD）　1時間 およそ4.5GB</option>
+    <option value="4k">きれい（4K）　1時間 およそ11GB・熱くなりやすい</option>
+    <option value="hd">軽い（HD）　1時間 およそ2.3GB</option>
+  </select>
+  <div class="note">あとで自分のところを拡大するなら「きれい」が有利ですが、熱で止まりやすくなります。まずは「ふつう」で試してください。</div>
+
+  <label for="selCam">カメラ</label>
+  <select id="selCam"><option value="">うしろのカメラ（おまかせ）</option></select>
+  <div class="note">望遠レンズが別にあるスマホは、ここで選べることがあります。</div>
+
+  <div id="zoomBox" hidden>
+    <label for="rngZoom">ズーム <span id="zoomVal"></span></label>
+    <input type="range" id="rngZoom">
+    <div class="note">波に乗る場所が画面いっぱいに入るくらいまで寄せると、あとの拡大が少なくて済みます。</div>
+  </div>
+
+  <div class="chk"><input type="checkbox" id="chkMic"><label for="chkMic" style="margin:0">波の音も録る</label></div>
+</div>
+
+<h2>撮った録画</h2>
+<div id="empty">まだ録画はありません。</div>
+<div id="sessList"></div>
+<div class="note" id="storeNote"></div>
+
+<h2>気をつけること</h2>
+<div class="info">
+  ・<b>録画中は画面を消さない・ほかのアプリに切りかえない</b>（切りかえている間は撮れません。戻ると自動で続きを撮ります）<br>
+  ・直射日光でスマホが熱くなると、スマホ自身が録画を止めることがあります。<b>日かげに置く・タオルをかける</b>と長もちします<br>
+  ・録画は10分ごとに区切って、撮りながらスマホの中に保存します。途中で落ちても、それまでの分は残ります<br>
+  ・録画はこのアプリの中にあります。<b>「ぜんぶ保存」でダウンロードフォルダに出してから</b>パソコンへ移してください
+</div>
+
+<!-- カウントダウン -->
+<div class="cover" id="countCover">
+  <div id="countNum">3</div>
+  <div id="countMsg">「ピー」と同時に<br>時計のスタートを押す</div>
+</div>
+
+<!-- 暗い画面 -->
+<div class="cover" id="dimCover">
+  <div id="dimTime">0:00:00</div>
+  <div id="dimMsg">録画中です。2回タップで元の画面に戻ります</div>
+</div>
+
+<!-- 再生 -->
+<div class="cover" id="playCover">
+  <video id="playVideo" controls playsinline></video>
+  <button id="playClose">とじる</button>
+</div>
+
+<script>
+"use strict";
+const VERSION = "1.0";
+document.getElementById("verBadge").textContent = "v" + VERSION;
+
+// ---------- 調整できる数字 ----------
+// ?seg=5 のようにアドレスへ付けると区切りの秒数を変えられる（動作確認用）
+const params = new URLSearchParams(location.search);
+const SEG_SEC = Math.max(2, parseFloat(params.get("seg")) || 600); // 10分ごとに区切る
+const CHUNK_MS = Math.min(5000, SEG_SEC * 500);  // この間隔でスマホの中へ書きこむ
+const MIN_FREE = 300 * 1024 * 1024;              // 空きがこれを切ったら自動で止める
+const QUALITY = {
+  "4k":  { w: 3840, h: 2160, bps: 24000000 },
+  "fhd": { w: 1920, h: 1080, bps: 10000000 },
+  "hd":  { w: 1280, h: 720,  bps: 5000000 }
+};
+
+// ---------- 画面の部品 ----------
+const $ = id => document.getElementById(id);
+const preview = $("preview"), videoWrap = $("videoWrap"), recBadge = $("recBadge");
+const camMsg = $("camMsg"), camMsgText = $("camMsgText"), btnCam = $("btnCam");
+const elapsedEl = $("elapsed"), statusEl = $("status"), infoEl = $("info");
+const btnRec = $("btnRec"), btnDim = $("btnDim");
+const selQuality = $("selQuality"), selCam = $("selCam"), chkMic = $("chkMic");
+const zoomBox = $("zoomBox"), rngZoom = $("rngZoom"), zoomVal = $("zoomVal");
+
+// ---------- 状態 ----------
+let stream = null;        // カメラとマイクの流れ
+let recorder = null;      // 録画係（MediaRecorder）
+let recording = false;
+let starting = false;     // カウントダウン中
+let mimeType = "";
+let T0 = 0;               // 「ピー」の瞬間（＝時計のストップウォッチの0秒）
+let sessionId = "";       // 1回の録画のまとまりの名前（始めた日時）
+let segNo = 0;
+let curSeg = null;        // いま書いている区切り
+let tickTimer = null;
+let wakeLock = null;
+let gaps = 0;             // 途中で撮れなかった回数
+let writeChain = Promise.resolve(); // 書きこみを順番どおりに行うための列
+
+// ---------- 設定の保存 ----------
+selQuality.value = localStorage.getItem("nr_quality") || "fhd";
+chkMic.checked = localStorage.getItem("nr_mic") !== "off";
+selQuality.onchange = () => { localStorage.setItem("nr_quality", selQuality.value); openCamera(); };
+chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" : "off"); openCamera(); };
+selCam.onchange = () => { localStorage.setItem("nr_cam", selCam.value); openCamera(); };
+
+// ---------- 時間の表示 ----------
+const pad = n => String(n).padStart(2, "0");
+function fmtClock(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  return Math.floor(sec / 3600) + ":" + pad(Math.floor(sec % 3600 / 60)) + ":" + pad(sec % 60);
+}
+function fmtLong(sec) {
+  const m = Math.round(sec / 60);
+  return m >= 60 ? Math.floor(m / 60) + "時間" + (m % 60) + "分" : m + "分";
+}
+function fmtSize(bytes) {
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1000 ? (mb / 1024).toFixed(1) + "GB" : Math.round(mb) + "MB";
+}
+function setStatus(text, warn) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("warn", !!warn);
+}
+
+// ---------- スマホの中のデータベース（IndexedDB）----------
+// segs   … 区切り1本ごとの情報（何番目・何秒目から・大きさ）
+// chunks … 映像の中身。数秒ごとの小さなかたまりで、撮りながら書きこむ
+let db = null;
+function openDB() {
+  return new Promise((ok, ng) => {
+    const req = indexedDB.open("nami-rec", 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore("segs", { keyPath: "id", autoIncrement: true });
+      req.result.createObjectStore("chunks", { keyPath: ["seg", "i"] });
+    };
+    req.onsuccess = () => { db = req.result; ok(); };
+    req.onerror = () => ng(req.error);
+  });
+}
+function dbTx(stores, mode, work) {
+  return new Promise((ok, ng) => {
+    const tx = db.transaction(stores, mode);
+    let result;
+    work(tx, v => { result = v; });
+    tx.oncomplete = () => ok(result);
+    tx.onerror = () => ng(tx.error);
+    tx.onabort = () => ng(tx.error || new Error("保存できませんでした"));
+  });
+}
+const segRange = id => IDBKeyRange.bound([id, 0], [id, Infinity]);
+function dbAddSeg(seg) {
+  return dbTx("segs", "readwrite", (tx, set) => {
+    tx.objectStore("segs").add(seg).onsuccess = e => set(e.target.result);
+  });
+}
+function dbPutChunk(seg, i, blob) {
+  return dbTx(["segs", "chunks"], "readwrite", tx => {
+    tx.objectStore("chunks").put({ seg: seg.id, i, blob });
+    tx.objectStore("segs").put(segRecord(seg));
+  });
+}
+function dbPutSeg(seg) {
+  return dbTx("segs", "readwrite", tx => { tx.objectStore("segs").put(segRecord(seg)); });
+}
+function dbListSegs() {
+  return dbTx("segs", "readonly", (tx, set) => {
+    tx.objectStore("segs").getAll().onsuccess = e => set(e.target.result);
+  });
+}
+function dbGetBlob(seg) {
+  return dbTx("chunks", "readonly", (tx, set) => {
+    tx.objectStore("chunks").getAll(segRange(seg.id)).onsuccess = e =>
+      set(new Blob(e.target.result.map(c => c.blob), { type: seg.type }));
+  });
+}
+function dbDeleteSeg(id) {
+  return dbTx(["segs", "chunks"], "readwrite", tx => {
+    tx.objectStore("chunks").delete(segRange(id));
+    tx.objectStore("segs").delete(id);
+  });
+}
+// データベースに入れる形（録画係などの部品は入れない）
+function segRecord(seg) {
+  const r = { session: seg.session, no: seg.no, offset: seg.offset,
+              dur: seg.dur, size: seg.size, type: seg.type, w: seg.w, h: seg.h };
+  if (seg.id !== undefined) r.id = seg.id; // 最初の1回は番号をデータベースに付けてもらう
+  return r;
+}
+
+// ---------- カメラ ----------
+async function openCamera() {
+  if (recording || starting) return;
+  closeCamera();
+  camMsg.hidden = false; btnCam.hidden = true;
+  camMsgText.textContent = "カメラを準備しています…";
+  btnRec.disabled = true;
+  const q = QUALITY[selQuality.value];
+  const camId = localStorage.getItem("nr_cam") || "";
+  const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: 30 } };
+  if (camId) video.deviceId = { exact: camId }; else video.facingMode = "environment";
+  // 音は加工なしで録る（波の音を消されないように）
+  const audio = chkMic.checked
+    ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video, audio });
+  } catch (err) {
+    if (camId) { // 選んだカメラが使えないときは、おまかせに戻してやり直す
+      localStorage.removeItem("nr_cam"); selCam.value = "";
+      return openCamera();
+    }
+    camMsgText.textContent = cameraErrorText(err);
+    btnCam.hidden = false;
+    return;
+  }
+  preview.srcObject = stream;
+  preview.play().catch(() => {});
+  camMsg.hidden = true;
+  btnRec.disabled = false;
+  const track = stream.getVideoTracks()[0];
+  track.addEventListener("ended", onTrackLost);
+  setupZoom(track);
+  listCameras();
+  updateInfo();
+}
+function closeCamera() {
+  if (stream) stream.getTracks().forEach(t => { t.removeEventListener("ended", onTrackLost); t.stop(); });
+  stream = null;
+}
+function cameraErrorText(err) {
+  if (!navigator.mediaDevices) return "このページではカメラを使えません（https:// で開いてください）";
+  if (err && err.name === "NotAllowedError") return "カメラが許可されていません。アドレスバーの鍵マークから「カメラ」を許可してください";
+  if (err && err.name === "NotFoundError") return "カメラが見つかりませんでした";
+  if (err && err.name === "NotReadableError") return "ほかのアプリがカメラを使っています。カメラアプリを閉じてからやり直してください";
+  return "カメラを起動できませんでした";
+}
+btnCam.onclick = openCamera;
+
+// うしろのカメラの一覧（許可をもらったあとでないと名前が取れない）
+async function listCameras() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    const cur = localStorage.getItem("nr_cam") || "";
+    selCam.length = 1;
+    devs.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || "カメラ " + (i + 1);
+      selCam.appendChild(o);
+    });
+    selCam.value = cur;
+    if (selCam.value !== cur) selCam.value = "";
+  } catch { /* 一覧が取れなくても、おまかせで撮れる */ }
+}
+
+// ズーム（対応しているスマホだけ出す）
+function setupZoom(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  if (!caps.zoom || caps.zoom.max <= caps.zoom.min) { zoomBox.hidden = true; return; }
+  zoomBox.hidden = false;
+  rngZoom.min = caps.zoom.min; rngZoom.max = caps.zoom.max; rngZoom.step = caps.zoom.step || 0.1;
+  const saved = parseFloat(localStorage.getItem("nr_zoom"));
+  rngZoom.value = saved >= caps.zoom.min && saved <= caps.zoom.max ? saved : caps.zoom.min;
+  applyZoom();
+}
+function applyZoom() {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track) return;
+  const z = parseFloat(rngZoom.value);
+  zoomVal.textContent = z.toFixed(1) + "倍";
+  track.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
+}
+rngZoom.oninput = () => { localStorage.setItem("nr_zoom", rngZoom.value); applyZoom(); };
+
+// ---------- 画面の下の情報（映像の大きさ・あと何分撮れるか・電池）----------
+async function freeBytes() {
+  try {
+    const est = await navigator.storage.estimate();
+    if (est && est.quota) return est.quota - (est.usage || 0);
+  } catch { /* 取れない機種もある */ }
+  return null;
+}
+async function updateInfo() {
+  const parts = [];
+  const track = stream && stream.getVideoTracks()[0];
+  if (track) {
+    const s = track.getSettings();
+    if (s.width) {
+      parts.push("映像 <b>" + s.width + "×" + s.height + "</b>");
+      if (s.width < s.height) parts.push("<b style='color:#ffb84d'>たて向きです。横向きに置いてください</b>");
+    }
+  }
+  const free = await freeBytes();
+  if (free !== null) {
+    const perSec = (QUALITY[selQuality.value].bps + 128000) / 8;
+    parts.push("あと およそ<b>" + fmtLong(Math.max(0, free - MIN_FREE) / perSec) + "</b>撮れます");
+  }
+  try {
+    if (navigator.getBattery) {
+      const b = await navigator.getBattery();
+      parts.push("電池 <b>" + Math.round(b.level * 100) + "%</b>" + (b.charging ? "（充電中）" : ""));
+    }
+  } catch { /* 電池が分からない機種は出さない */ }
+  if (recording && gaps) parts.push("<b style='color:#ffb84d'>途中で切れた回数 " + gaps + "回</b>");
+  infoEl.innerHTML = parts.join("　／　"); // 中身はすべてこのアプリが作った数字と決まった文
+  return free;
+}
+
+// ---------- 録画スタート／ストップ ----------
+btnRec.onclick = () => {
+  if (starting) return;
+  if (recording) {
+    if (confirm("録画を止めますか？")) stopRecording("録画を止めました。下の一覧から保存できます");
+  } else startRecording();
+};
+
+async function startRecording() {
+  if (!stream) return;
+  const candidates = [
+    "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4",
+    "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"
+  ];
+  if (!window.MediaRecorder) { setStatus("このブラウザは録画に対応していません", true); return; }
+  mimeType = candidates.find(t => MediaRecorder.isTypeSupported(t)) || "";
+
+  const free = await freeBytes();
+  if (free !== null && free < MIN_FREE * 2) {
+    setStatus("スマホの空きが足りません。古い録画を消してからやり直してください", true);
+    return;
+  }
+  // 「勝手に消さないで」とスマホにお願いする（断られても録画はできる）
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+  starting = true;
+  btnRec.disabled = true;
+  await keepScreenOn();
+  await countdown();
+  starting = false;
+  btnRec.disabled = false;
+  if (!stream) { setStatus("カメラが止まったので、録画を始められませんでした", true); return; }
+
+  T0 = Date.now();
+  const d = new Date(T0);
+  sessionId = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  segNo = 0; gaps = 0;
+  recording = true;
+  try {
+    await startSegment();
+  } catch (err) {
+    recording = false;
+    setStatus("録画を始められませんでした（" + (err && err.message || err) + "）", true);
+    return;
+  }
+  tickTimer = setInterval(tick, 500);
+  btnRec.textContent = "■ 録画を止める";
+  btnRec.classList.add("recording");
+  btnDim.classList.add("show");
+  videoWrap.classList.add("rec");
+  recBadge.classList.add("on");
+  selQuality.disabled = selCam.disabled = chkMic.disabled = true;
+  setStatus("録画中（" + Math.round(SEG_SEC / 60) + "分ごとに区切って保存します）");
+}
+
+function stopRecording(message, warn) {
+  recording = false;
+  clearInterval(tickTimer);
+  // 止めると最後の分が少し遅れて届く。一覧は、それを書き終えてから作り直す（rec.onstop の中）
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+  else writeChain.then(refreshAfterStop);
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  btnRec.textContent = "● 録画スタート";
+  btnRec.classList.remove("recording");
+  btnDim.classList.remove("show");
+  videoWrap.classList.remove("rec");
+  recBadge.classList.remove("on");
+  selQuality.disabled = selCam.disabled = chkMic.disabled = false;
+  setDim(false);
+  setStatus(message, warn);
+}
+function refreshAfterStop() { if (!recording) { renderList(); updateInfo(); } }
+
+// 3・2・1・ピー（ピーの瞬間が録画の0秒）
+function countdown() {
+  const cover = $("countCover"), num = $("countNum");
+  let ac = null;
+  try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { /* 音が出せなくても数字は出る */ }
+  const beep = (freq, sec) => {
+    if (!ac) return;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = freq; g.gain.value = 0.5;
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + sec);
+  };
+  cover.classList.add("show");
+  return new Promise(done => {
+    let n = 3;
+    const step = () => {
+      if (n > 0) {
+        num.textContent = n; beep(880, 0.15); n--;
+        setTimeout(step, 1000);
+      } else {
+        num.textContent = "スタート"; num.style.fontSize = "64px";
+        beep(1760, 0.8);
+        done();
+        setTimeout(() => { cover.classList.remove("show"); num.style.fontSize = ""; if (ac) ac.close(); }, 1200);
+      }
+    };
+    step();
+  });
+}
+
+// ---------- 区切りごとの録画 ----------
+async function startSegment() {
+  const track = stream.getVideoTracks()[0];
+  const set = track.getSettings();
+  const seg = { session: sessionId, no: ++segNo, offset: (Date.now() - T0) / 1000,
+                dur: 0, size: 0, type: mimeType || "video/webm", w: set.width || 0, h: set.height || 0,
+                n: 0, t0: 0 };
+  seg.id = await dbAddSeg(segRecord(seg));
+  const opts = { videoBitsPerSecond: QUALITY[selQuality.value].bps, audioBitsPerSecond: 128000 };
+  if (mimeType) opts.mimeType = mimeType;
+  const rec = new MediaRecorder(stream, opts);
+  seg.t0 = Date.now();
+  rec.onstart = () => { seg.t0 = Date.now(); seg.offset = (seg.t0 - T0) / 1000; };
+  rec.ondataavailable = e => {
+    if (!e.data || !e.data.size) return;
+    const i = seg.n++;
+    seg.size += e.data.size;
+    seg.dur = (Date.now() - seg.t0) / 1000;
+    writeChain = writeChain.then(() => dbPutChunk(seg, i, e.data)).catch(onWriteError);
+  };
+  rec.onstop = () => {
+    writeChain = writeChain.then(() => dbPutSeg(seg)).catch(onWriteError).then(refreshAfterStop);
+  };
+  rec.onerror = () => { if (recording) restartAfterTrouble(); };
+  rec.start(CHUNK_MS);
+  recorder = rec;
+  curSeg = seg;
+}
+
+let writeFailed = false;
+function onWriteError() {
+  if (writeFailed) return;
+  writeFailed = true;
+  if (recording) stopRecording("⚠ スマホの中に保存できなくなったので止めました。空き容量を確認してください", true);
+  setTimeout(() => { writeFailed = false; }, 3000);
+}
+
+// 0.5秒ごと：時間の表示・区切りの交代・空き容量の見張り
+let lastCheck = 0;
+function tick() {
+  if (!recording) return;
+  const now = Date.now();
+  const t = fmtClock((now - T0) / 1000);
+  elapsedEl.textContent = t;
+  $("dimTime").textContent = t;
+  if (curSeg && recorder && recorder.state === "recording" && now - curSeg.t0 >= SEG_SEC * 1000) {
+    recorder.stop();
+    startSegment().catch(() => restartAfterTrouble());
+  }
+  if (now - lastCheck > 30000) {
+    lastCheck = now;
+    updateInfo().then(free => {
+      if (recording && free !== null && free < MIN_FREE)
+        stopRecording("⚠ スマホの空きがなくなりそうなので止めました", true);
+    });
+  }
+}
+
+// ---------- 途中で切れたときの立て直し ----------
+// 画面を消した・ほかのアプリへ行った・カメラを取られた、のあとで続きを撮る。
+// 区切りごとに「ピーから何秒目か」を持っているので、間があいても時計とはずれない
+function onTrackLost() { if (recording) restartAfterTrouble(); }
+
+let restarting = false;
+async function restartAfterTrouble() {
+  if (restarting || !recording) return;
+  if (document.visibilityState !== "visible") return; // 戻ってきたときにやり直す
+  restarting = true;
+  gaps++;
+  try {
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    const track = stream && stream.getVideoTracks()[0];
+    if (!track || track.readyState !== "live") {
+      recording = false;            // openCamera は録画中は動かないので、いったん外す
+      await openCamera();
+      recording = true;
+      if (!stream) throw new Error("camera");
+    }
+    await startSegment();
+    await keepScreenOn();
+    setStatus("途中で切れましたが、続きを撮っています", true);
+  } catch {
+    stopRecording("⚠ カメラが使えなくなったので止めました", true);
+  }
+  restarting = false;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!recording) { if (document.visibilityState === "visible" && !stream && !starting) openCamera(); return; }
+  if (document.visibilityState === "hidden") {
+    // 見えていない間は映像が来ないので、ここまでをきちんと閉じて保存する
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  } else {
+    restartAfterTrouble();
+  }
+});
+
+// ---------- 画面を消さないようにする（Wake Lock）----------
+async function keepScreenOn() {
+  try {
+    if ("wakeLock" in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    }
+  } catch { /* 対応していない機種でも録画は続ける */ }
+}
+
+// ---------- 画面を暗くする ----------
+// 有機ELのスマホは黒い画面だと電気をほとんど使わない。映像を画面に出すのもやめて熱を減らす
+function setDim(on) {
+  $("dimCover").classList.toggle("show", on);
+  if (on) preview.srcObject = null;
+  else if (stream && preview.srcObject !== stream) { preview.srcObject = stream; preview.play().catch(() => {}); }
+}
+btnDim.onclick = () => setDim(true);
+let lastTap = 0;
+$("dimCover").onclick = () => {
+  const now = Date.now();
+  if (now - lastTap < 600) setDim(false);
+  lastTap = now;
+};
+
+// ---------- 撮った録画の一覧 ----------
+const sessList = $("sessList"), emptyEl = $("empty");
+const extOf = type => type.includes("mp4") ? "mp4" : "webm";
+// ファイル名の最後の「○○s」が「ピーから何秒目に始まったか」。パソコン側がこれを読んで時計と合わせる
+const fileName = seg => "nami_" + seg.session + "_" + pad(seg.no) + "_" + seg.offset.toFixed(2) + "s." + extOf(seg.type);
+const lapsKey = session => "nr_laps_" + session;
+
+async function renderList() {
+  const segs = (await dbListSegs()).filter(s => s.size > 0);
+  const groups = new Map();
+  for (const s of segs) {
+    if (!groups.has(s.session)) groups.set(s.session, []);
+    groups.get(s.session).push(s);
+  }
+  const sessions = [...groups.keys()].sort().reverse(); // 新しい順
+  emptyEl.style.display = sessions.length ? "none" : "block";
+  sessList.textContent = "";
+  let total = 0;
+  for (const id of sessions) {
+    const list = groups.get(id).sort((a, b) => a.no - b.no);
+    const last = list[list.length - 1];
+    const size = list.reduce((a, s) => a + s.size, 0);
+    total += size;
+    const isNow = recording && id === sessionId;
+
+    const box = document.createElement("div");
+    box.className = "sess";
+    const ttl = document.createElement("div");
+    ttl.className = "ttl";
+    ttl.textContent = id.slice(4, 6) + "/" + id.slice(6, 8) + " " + id.slice(9, 11) + ":" + id.slice(11, 13) + " の録画" + (isNow ? "（いま撮っています）" : "");
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = "長さ " + fmtClock(last.offset + last.dur) + "　／　" + list.length + "本　／　" + fmtSize(size)
+      + (last.w ? "　／　" + last.w + "×" + last.h : "");
+    box.append(ttl, sub);
+
+    const btns = document.createElement("div");
+    btns.className = "btns";
+    const bSave = document.createElement("button");
+    bSave.textContent = "💾 ぜんぶ保存";
+    bSave.onclick = () => saveAll(id, list, bSave);
+    const bFiles = document.createElement("button");
+    bFiles.textContent = "▶ 1本ずつ見る";
+    const bDel = document.createElement("button");
+    bDel.className = "del";
+    bDel.textContent = "🗑";
+    bDel.onclick = async () => {
+      if (!confirm("この録画（" + list.length + "本・" + fmtSize(size) + "）をスマホから消します。\nパソコンへ移したあとですか？")) return;
+      for (const s of list) await dbDeleteSeg(s.id);
+      localStorage.removeItem(lapsKey(id));
+      renderList(); updateInfo();
+    };
+    if (isNow) bSave.disabled = bDel.disabled = true;
+    btns.append(bSave, bFiles, bDel);
+    box.append(btns);
+
+    const files = document.createElement("div");
+    files.className = "files";
+    files.hidden = true;
+    for (const s of list) {
+      const row = document.createElement("div");
+      const name = document.createElement("span");
+      name.textContent = pad(s.no) + "本目　" + fmtClock(s.offset) + " から　" + fmtSize(s.size);
+      const bPlay = document.createElement("button");
+      bPlay.textContent = "▶";
+      bPlay.onclick = () => playSeg(s);
+      const bOne = document.createElement("button");
+      bOne.textContent = "💾";
+      bOne.onclick = () => downloadSeg(s);
+      row.append(name, bPlay, bOne);
+      files.append(row);
+    }
+    bFiles.onclick = () => { files.hidden = !files.hidden; };
+    box.append(files);
+
+    const ta = document.createElement("textarea");
+    ta.placeholder = "時計に残ったラップを、1行に1つ書き写す\n例）\n12'34\"56\n19:07";
+    ta.value = localStorage.getItem(lapsKey(id)) || "";
+    ta.oninput = () => localStorage.setItem(lapsKey(id), ta.value);
+    box.append(ta);
+
+    sessList.append(box);
+  }
+  $("storeNote").textContent = sessions.length ? "このアプリの中の録画 合計 " + fmtSize(total) : "";
+}
+
+// ---------- 再生 ----------
+let playURL = null;
+async function playSeg(seg) {
+  if (playURL) URL.revokeObjectURL(playURL);
+  playURL = URL.createObjectURL(await dbGetBlob(seg));
+  $("playVideo").src = playURL;
+  $("playCover").classList.add("show");
+  $("playVideo").play().catch(() => {});
+}
+$("playClose").onclick = () => {
+  $("playVideo").pause();
+  $("playVideo").removeAttribute("src");
+  $("playCover").classList.remove("show");
+  if (playURL) { URL.revokeObjectURL(playURL); playURL = null; }
+};
+
+// ---------- 保存（スマホのダウンロードフォルダへ）----------
+function download(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function downloadSeg(seg) { download(await dbGetBlob(seg), fileName(seg)); }
+
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function saveAll(id, list, btn) {
+  btn.disabled = true;
+  for (let i = 0; i < list.length; i++) {
+    btn.textContent = "保存中 " + (i + 1) + "/" + list.length;
+    await downloadSeg(list[i]);
+    await wait(1500); // 続けて出すとブラウザが取りこぼすので少し待つ
+  }
+  download(new Blob([lapsFile(id, list)], { type: "text/plain" }), "laps_" + id + ".txt");
+  btn.textContent = "💾 ぜんぶ保存";
+  btn.disabled = false;
+  setStatus("ダウンロードフォルダに保存しました。「nami_" + id + "」で始まるファイルをパソコンへ移してください");
+}
+
+// パソコンの「波を切り出す」にそのまま渡せる設定ファイルを作る
+function lapsFile(id, list) {
+  const laps = (localStorage.getItem(lapsKey(id)) || "").trim();
+  return [
+    "# 波を切り出す 設定ファイル（波撮りカメラが作りました）",
+    "# このファイルと録画を「nami-cut」フォルダに入れて、",
+    "# このファイルを「波を切り出す.bat」の上にドラッグしてください。",
+    "",
+    "動画 = nami_" + id + "_*." + extOf(list[0].type),
+    "",
+    "# 押した時刻の何秒前から・何秒後まで切り出すか",
+    "前 = 30",
+    "後 = 3",
+    "",
+    "# 自分のところを拡大する（1 = そのまま、2 = 2倍）",
+    "# 位置は 左右, 上下 を 0〜100 で（50, 50 がまん中）",
+    "拡大 = 1",
+    "位置 = 50, 50",
+    "",
+    "# ラップタイム（時計に残った数字を1行ずつ）",
+    laps || "# ← ここに書く",
+    ""
+  ].join("\r\n");
+}
+
+// ---------- はじめに ----------
+(async () => {
+  try {
+    await openDB();
+  } catch {
+    setStatus("スマホの中の保存場所を開けませんでした。シークレットモードでは使えません", true);
+    return;
+  }
+  // 中身が1つも書かれなかった区切り（始めた直後に閉じた等）は片付ける
+  for (const s of await dbListSegs()) if (!s.size) await dbDeleteSeg(s.id);
+  renderList();
+  openCamera();
+})();
+
+// オフラインでも開けるようにする（海は電波が弱いことがある）
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
