@@ -155,6 +155,17 @@
     <div class="note">波に乗る場所が画面いっぱいに入るくらいまで寄せると、あとの拡大が少なくて済みます。</div>
   </div>
 
+  <div id="focusBox" hidden>
+    <label for="selFocus">ピント</label>
+    <select id="selFocus">
+      <option value="auto">おまかせ（自動で合わせ続ける）</option>
+      <option value="far">遠く（海）に合わせて固定</option>
+      <option value="lock">いまのピントで固定</option>
+    </select>
+    <div class="note">波や水しぶきにつられてピントがずれるときは「遠くに合わせて固定」にしてください。切りかえたら、上の映像がくっきりしているか確かめてから録画してください。</div>
+  </div>
+  <div class="note" id="focusNone" hidden>このスマホは、アプリからピントを固定できません（自動で合わせ続けます）。</div>
+
   <div class="chk"><input type="checkbox" id="chkMic"><label for="chkMic" style="margin:0">波の音も録る</label></div>
 
   <label style="margin-top:18px">パソコンで切り出すときの設定</label>
@@ -204,7 +215,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.2";
+const VERSION = "1.3";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -392,6 +403,7 @@ async function openCamera() {
   const track = stream.getVideoTracks()[0];
   track.addEventListener("ended", onTrackLost);
   setupZoom(track);
+  setupFocus(track);
   listCameras();
   updateInfo();
 }
@@ -443,6 +455,45 @@ function applyZoom() {
   track.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
 }
 rngZoom.oninput = () => { localStorage.setItem("nr_zoom", rngZoom.value); applyZoom(); };
+
+// ピント（固定できるスマホだけ出す）
+// 自動のままだと、動き続ける波や水しぶきに合わせ直して、ときどきピントが外れる。
+// 遠く（いちばん遠い距離）に固定すると、沖のサーファーにずっと合ったままになる
+const selFocus = $("selFocus");
+function setupFocus(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const ok = Array.isArray(caps.focusMode) && caps.focusMode.includes("manual") && caps.focusDistance;
+  $("focusBox").hidden = !ok;
+  $("focusNone").hidden = !!ok;
+  if (!ok) return;
+  selFocus.value = localStorage.getItem("nr_focus") || "auto";
+  if (!selFocus.value) selFocus.value = "auto";
+  if (selFocus.value !== "auto") applyFocus(false); // 起動したばかりのカメラは、もともと自動
+}
+async function applyFocus(tell) {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track) return;
+  const caps = track.getCapabilities();
+  const mode = selFocus.value;
+  try {
+    if (mode === "auto") {
+      await track.applyConstraints({ advanced: [{ focusMode: caps.focusMode.includes("continuous") ? "continuous" : caps.focusMode[0] }] });
+      // 自動に戻す命令を受け付けないカメラがある。そのときはカメラを起動し直す（起動直後は自動）
+      if (track.getSettings().focusMode === "manual") {
+        if (recording || starting) { setStatus("ピントを自動に戻すのは、録画を止めたあとになります", true); return; }
+        await openCamera();
+      }
+    } else {
+      const now = track.getSettings().focusDistance;
+      const d = mode === "lock" && typeof now === "number" ? now : caps.focusDistance.max;
+      await track.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: d }] });
+    }
+    if (tell) setStatus(mode === "auto" ? "ピントを自動にしました" : "ピントを固定しました。映像がくっきりしているか確かめてください");
+  } catch {
+    if (tell) setStatus("ピントを切りかえられませんでした（このスマホでは使えないようです）", true);
+  }
+}
+selFocus.onchange = () => { localStorage.setItem("nr_focus", selFocus.value); applyFocus(true); };
 
 // ---------- 画面の下の情報（映像の大きさ・あと何分撮れるか・電池）----------
 async function freeBytes() {
