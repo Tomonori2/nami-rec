@@ -77,6 +77,14 @@
   .sess .files div { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #12394b; }
   .sess .files span { flex: 1; }
   .sess .files button { padding: 6px 12px; background: #12394b; font-size: 14px; }
+  .sess .laps { margin-top: 6px; font-size: 14px; }
+  .sess .laps div { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid #12394b; }
+  .sess .laps span { flex: 1; }
+  .sess .laps button { padding: 6px 12px; background: #12506a; font-size: 14px; }
+  .sess .laps .bad { color: #ffb84d; }
+  .cutset { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; font-size: 14px; }
+  .cutset input[type=number] { width: 80px; font: inherit; padding: 8px; border-radius: 8px;
+    background: #06202e; color: #e8f4f8; border: 1px solid #2c5566; }
   #empty { font-size: 14px; color: #7fa6b5; }
 
   /* カウントダウン・暗い画面・再生 */
@@ -91,6 +99,9 @@
   #dimMsg { font-size: 14px; margin-top: 12px; }
   #playCover { background: rgba(0,0,0,.94); }
   #playVideo { max-width: 100%; max-height: 78vh; }
+  /* 横倒しで録れた録画は、見るときだけ起こす */
+  #playVideo.rotL { transform: rotate(-90deg); max-width: 70vh; max-height: 92vw; }
+  #playVideo.rotR { transform: rotate(90deg); max-width: 70vh; max-height: 92vw; }
   #playClose { margin-top: 12px; padding: 12px 40px; background: #12506a; font-size: 16px; }
 </style>
 </head>
@@ -145,6 +156,19 @@
   </div>
 
   <div class="chk"><input type="checkbox" id="chkMic"><label for="chkMic" style="margin:0">波の音も録る</label></div>
+
+  <label style="margin-top:18px">パソコンで切り出すときの設定</label>
+  <div class="note" style="margin-bottom:8px">ここで決めた数字が、「保存」で出るメモ（laps_○○.txt）に最初から書きこまれます。</div>
+  <div class="cutset">
+    <span>前の余白</span><span><input type="number" id="cutBefore" min="5" max="90" step="1"> 秒（ボタンの何秒前から）</span>
+    <span>後の余白</span><span><input type="number" id="cutAfter" min="0" max="20" step="1"> 秒（ボタンの何秒後まで）</span>
+    <span>拡大</span><select id="cutZoom">
+      <option value="1">しない</option><option value="1.5">1.5倍</option>
+      <option value="2">2倍</option><option value="3">3倍</option></select>
+    <span>左右 <b id="cutXVal"></b></span><input type="range" id="cutX" min="0" max="100" step="5">
+    <span>上下 <b id="cutYVal"></b></span><input type="range" id="cutY" min="0" max="100" step="5">
+  </div>
+  <div class="note">左右・上下は拡大する場所です（0 = 左はし・上はし、50 = まん中、100 = 右はし・下はし）。</div>
 </div>
 
 <h2>撮った録画</h2>
@@ -180,7 +204,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.1";
+const VERSION = "1.2";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -217,6 +241,7 @@ let curSeg = null;        // いま書いている区切り
 let tickTimer = null;
 let wakeLock = null;
 let gaps = 0;             // 途中で撮れなかった回数
+let lowWarned = false;    // 電池の注意を出したか（1回の録画で1度だけ）
 let writeChain = Promise.resolve(); // 書きこみを順番どおりに行うための列
 
 // ---------- 設定の保存 ----------
@@ -225,6 +250,30 @@ chkMic.checked = localStorage.getItem("nr_mic") !== "off";
 selQuality.onchange = () => { localStorage.setItem("nr_quality", selQuality.value); openCamera(); };
 chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" : "off"); openCamera(); };
 selCam.onchange = () => { localStorage.setItem("nr_cam", selCam.value); openCamera(); };
+
+// 切り出しの設定（パソコンに渡すメモに書く数字）
+const CUT_DEFAULT = { before: 30, after: 3, zoom: "1", x: 50, y: 50 };
+function loadCut() {
+  try { return { ...CUT_DEFAULT, ...JSON.parse(localStorage.getItem("nr_cut") || "{}") }; }
+  catch { return { ...CUT_DEFAULT }; }
+}
+function showCut() {
+  const c = loadCut();
+  $("cutBefore").value = c.before; $("cutAfter").value = c.after; $("cutZoom").value = c.zoom;
+  $("cutX").value = c.x; $("cutY").value = c.y;
+  $("cutXVal").textContent = c.x; $("cutYVal").textContent = c.y;
+}
+function saveCut() {
+  const num = (el, lo, hi, d) => { const v = parseFloat(el.value); return isNaN(v) ? d : Math.min(hi, Math.max(lo, v)); };
+  const c = { before: num($("cutBefore"), 5, 90, 30), after: num($("cutAfter"), 0, 20, 3),
+              zoom: $("cutZoom").value, x: num($("cutX"), 0, 100, 50), y: num($("cutY"), 0, 100, 50) };
+  localStorage.setItem("nr_cut", JSON.stringify(c));
+  showCut();
+  renderList(); // 「場面を見る」の位置は前の余白で変わる
+}
+for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY"]) $(id).addEventListener("change", saveCut);
+for (const id of ["cutX", "cutY"]) $(id).addEventListener("input", () => { $(id + "Val").textContent = $(id).value; });
+showCut();
 
 // ---------- 時間の表示 ----------
 const pad = n => String(n).padStart(2, "0");
@@ -305,7 +354,8 @@ function dbDeleteSeg(id) {
 // データベースに入れる形（録画係などの部品は入れない）
 function segRecord(seg) {
   const r = { session: seg.session, no: seg.no, offset: seg.offset,
-              dur: seg.dur, size: seg.size, type: seg.type, w: seg.w, h: seg.h, rot: seg.rot || "" };
+              dur: seg.dur, size: seg.size, type: seg.type, w: seg.w, h: seg.h, rot: seg.rot || "",
+              saved: !!seg.saved };
   if (seg.id !== undefined) r.id = seg.id; // 最初の1回は番号をデータベースに付けてもらう
   return r;
 }
@@ -422,7 +472,13 @@ async function updateInfo() {
   try {
     if (navigator.getBattery) {
       const b = await navigator.getBattery();
-      parts.push("電池 <b>" + Math.round(b.level * 100) + "%</b>" + (b.charging ? "（充電中）" : ""));
+      const low = b.level < 0.15 && !b.charging;
+      parts.push((low ? "<b style='color:#ffb84d'>電池が少なくなっています " : "電池 <b>")
+        + Math.round(b.level * 100) + "%</b>" + (b.charging ? "（充電中）" : ""));
+      if (low && recording && !lowWarned) {
+        lowWarned = true;
+        setStatus("⚠ 電池が残り" + Math.round(b.level * 100) + "%です。止まる前にモバイルバッテリーをつないでください", true);
+      }
     }
   } catch { /* 電池が分からない機種は出さない */ }
   if (recording && gaps) parts.push("<b style='color:#ffb84d'>途中で切れた回数 " + gaps + "回</b>");
@@ -466,7 +522,7 @@ async function startRecording() {
   T0 = Date.now();
   const d = new Date(T0);
   sessionId = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
-  segNo = 0; gaps = 0;
+  segNo = 0; gaps = 0; lowWarned = false;
   recording = true;
   try {
     await startSegment();
@@ -708,15 +764,29 @@ async function renderList() {
     ttl.textContent = id.slice(4, 6) + "/" + id.slice(6, 8) + " " + id.slice(9, 11) + ":" + id.slice(11, 13) + " の録画" + (isNow ? "（いま撮っています）" : "");
     const sub = document.createElement("div");
     sub.className = "sub";
+    const unsaved = list.filter(s => !s.saved);
     sub.textContent = "長さ " + fmtClock(last.offset + last.dur) + "　／　" + list.length + "本　／　" + fmtSize(size)
-      + (last.w ? "　／　" + last.w + "×" + last.h : "");
+      + (last.w ? "　／　" + last.w + "×" + last.h : "")
+      + "　／　" + (unsaved.length ? "保存済み " + (list.length - unsaved.length) + "/" + list.length + "本" : "✅ ぜんぶ保存済み");
     box.append(ttl, sub);
 
     const btns = document.createElement("div");
     btns.className = "btns";
     const bSave = document.createElement("button");
-    bSave.textContent = "💾 ぜんぶ保存";
-    bSave.onclick = () => saveAll(id, list, bSave);
+    // 保存したものをもう一度出すと、スマホが「(1)」付きの別ファイルを作ってしまう。まだの分だけ出す
+    const saveLabel = !unsaved.length ? "💾 もう一度ぜんぶ保存"
+      : unsaved.length < list.length ? "💾 まだの" + unsaved.length + "本を保存" : "💾 ぜんぶ保存";
+    bSave.textContent = saveLabel;
+    bSave.onclick = () => {
+      if (!unsaved.length && !confirm("ぜんぶ保存済みです。もう一度保存すると、名前に「(1)」が付いた同じファイルができます。続けますか？")) return;
+      saveAll(id, list, unsaved.length ? unsaved : list, bSave, saveLabel);
+    };
+    const bMemo = document.createElement("button");
+    bMemo.textContent = "📝 メモだけ保存";
+    bMemo.onclick = () => {
+      download(new Blob([lapsFile(id, list)], { type: "text/plain" }), "laps_" + id + ".txt");
+      setStatus("メモ（laps_" + id + ".txt）をダウンロードフォルダに保存しました");
+    };
     const bFiles = document.createElement("button");
     bFiles.textContent = "▶ 1本ずつ見る";
     const bDel = document.createElement("button");
@@ -728,8 +798,8 @@ async function renderList() {
       localStorage.removeItem(lapsKey(id));
       renderList(); updateInfo();
     };
-    if (isNow) bSave.disabled = bDel.disabled = true;
-    btns.append(bSave, bFiles, bDel);
+    if (isNow) bSave.disabled = bMemo.disabled = bDel.disabled = true;
+    btns.append(bSave, bMemo, bFiles, bDel);
     box.append(btns);
 
     const files = document.createElement("div");
@@ -738,13 +808,13 @@ async function renderList() {
     for (const s of list) {
       const row = document.createElement("div");
       const name = document.createElement("span");
-      name.textContent = pad(s.no) + "本目　" + fmtClock(s.offset) + " から　" + fmtSize(s.size);
+      name.textContent = (s.saved ? "✅ " : "") + pad(s.no) + "本目　" + fmtClock(s.offset) + " から　" + fmtSize(s.size);
       const bPlay = document.createElement("button");
       bPlay.textContent = "▶";
       bPlay.onclick = () => playSeg(s);
       const bOne = document.createElement("button");
       bOne.textContent = "💾";
-      bOne.onclick = () => downloadSeg(s);
+      bOne.onclick = async () => { await downloadSeg(s); renderList(); };
       row.append(name, bPlay, bOne);
       files.append(row);
     }
@@ -754,22 +824,92 @@ async function renderList() {
     const ta = document.createElement("textarea");
     ta.placeholder = "時計に残ったラップを、1行に1つ書き写す\n例）\n12'34\"56\n19:07";
     ta.value = localStorage.getItem(lapsKey(id)) || "";
-    ta.oninput = () => localStorage.setItem(lapsKey(id), ta.value);
-    box.append(ta);
+    const lapBox = document.createElement("div");
+    lapBox.className = "laps";
+    const recLen = last.offset + last.dur;   // この録画の長さ（ピーから最後まで）
+    const showLaps = () => renderLaps(lapBox, ta.value, list, recLen);
+    ta.oninput = () => { localStorage.setItem(lapsKey(id), ta.value); showLaps(); };
+    box.append(ta, lapBox);
+    showLaps();
 
     sessList.append(box);
   }
   $("storeNote").textContent = sessions.length ? "このアプリの中の録画 合計 " + fmtSize(total) : "";
 }
 
+// ---------- ラップの読み取り（パソコンの「波を切り出す」と同じ読み方）----------
+// 12'34"56（時計の表示）/ 12:34 / 1:05:20 / 10:55:00 / 753（秒）。「@ 30, 60」は位置の指定なので読まない
+function parseLap(line, total) {
+  const t = line.normalize("NFKC").split("#")[0].split("@")[0].trim()
+    .replace(/[’′]/g, "'").replace(/[”″]/g, '"');
+  if (!t) return null;
+  let m = t.match(/^(?:(\d+)[:\s])?(\d+)'(\d+)"(\d+)$/);
+  if (m) return (+m[1] || 0) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 100;
+  m = t.match(/^(?:(\d+)[:\s])?(\d+)'(\d+)"?$/);
+  if (m) return (+m[1] || 0) * 3600 + (+m[2]) * 60 + (+m[3]);
+  if (/^\d+(\.\d+)?(:\d+(\.\d+)?){1,2}$/.test(t)) {
+    const p = t.split(":").map(Number);
+    const asTime = p.reduce((a, v) => a * 60 + v, 0);
+    // 「10:55:00」は「10時間55分」と読むと長すぎるので、時計の表示（10分55秒00）として読む
+    if (p.length === 3 && asTime > total && /:\d\d$/.test(t)) {
+      const asWatch = p[0] * 60 + p[1] + p[2] / 100;
+      if (asWatch <= total) return asWatch;
+    }
+    return asTime;
+  }
+  if (/^\d+(\.\d+)?$/.test(t)) return +t;
+  return NaN; // 読めなかった
+}
+
+// 書いたラップを一覧にして、それぞれの波の場面へ飛べるようにする
+function renderLaps(box, text, list, total) {
+  box.textContent = "";
+  const before = loadCut().before;
+  let n = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const lap = parseLap(line, total);
+    if (lap === null) continue;
+    const row = document.createElement("div");
+    const label = document.createElement("span");
+    if (isNaN(lap)) {
+      label.className = "bad";
+      label.textContent = "⚠ 読めません：" + line.trim();
+      row.append(label);
+    } else if (lap > total + 1) {
+      label.className = "bad";
+      label.textContent = "⚠ " + fmtClock(lap) + " は録画の長さ（" + fmtClock(total) + "）をこえています";
+      row.append(label);
+    } else {
+      n++;
+      label.textContent = n + "本目　" + fmtClock(lap) + "（ボタン）";
+      const b = document.createElement("button");
+      b.textContent = "▶ 場面を見る";
+      b.onclick = () => playAt(list, Math.max(0, lap - before), lap);
+      row.append(label, b);
+    }
+    box.append(row);
+  }
+}
+
+// ピーから t 秒目の場面を再生する（その時間が入っている区切りを探す）
+function playAt(list, t, lap) {
+  const has = x => list.find(s => x >= s.offset && x < s.offset + s.dur + 0.5);
+  const seg = has(t) || has(lap);
+  if (!seg) { alert("その時間の映像はありません（画面を消していた間などは撮れていません）"); return; }
+  playSeg(seg, Math.max(0, (has(t) ? t : lap) - seg.offset));
+}
+
 // ---------- 再生 ----------
 let playURL = null;
-async function playSeg(seg) {
+async function playSeg(seg, at = 0) {
   if (playURL) URL.revokeObjectURL(playURL);
   playURL = URL.createObjectURL(await dbGetBlob(seg));
-  $("playVideo").src = playURL;
+  const v = $("playVideo");
+  v.className = seg.rot === "左" ? "rotL" : seg.rot === "右" ? "rotR" : "";
+  v.src = playURL;
+  if (at > 0) v.addEventListener("loadedmetadata", () => { v.currentTime = at; }, { once: true });
   $("playCover").classList.add("show");
-  $("playVideo").play().catch(() => {});
+  v.play().catch(() => {});
 }
 $("playClose").onclick = () => {
   $("playVideo").pause();
@@ -788,44 +928,56 @@ function download(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
-async function downloadSeg(seg) { download(await dbGetBlob(seg), fileName(seg)); }
+async function downloadSeg(seg) {
+  download(await dbGetBlob(seg), fileName(seg));
+  seg.saved = true;           // 次からは「まだの分」に入れない
+  await dbPutSeg(seg);
+}
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
-async function saveAll(id, list, btn) {
+async function saveAll(id, list, targets, btn, label) {
   btn.disabled = true;
-  for (let i = 0; i < list.length; i++) {
-    btn.textContent = "保存中 " + (i + 1) + "/" + list.length;
-    await downloadSeg(list[i]);
+  for (let i = 0; i < targets.length; i++) {
+    btn.textContent = "保存中 " + (i + 1) + "/" + targets.length;
+    await downloadSeg(targets[i]);
     await wait(1500); // 続けて出すとブラウザが取りこぼすので少し待つ
   }
   download(new Blob([lapsFile(id, list)], { type: "text/plain" }), "laps_" + id + ".txt");
-  btn.textContent = "💾 ぜんぶ保存";
+  btn.textContent = label;
   btn.disabled = false;
-  setStatus("ダウンロードフォルダに保存しました。「nami_" + id + "」で始まるファイルをパソコンへ移してください");
+  setStatus("ダウンロードフォルダに保存しました。「" + id + "」が名前に入ったファイルを、全部パソコンへ移してください");
+  renderList();
 }
 
 // パソコンの「波を切り出す」にそのまま渡せる設定ファイルを作る
 function lapsFile(id, list) {
-  const laps = (localStorage.getItem(lapsKey(id)) || "").trim();
+  // 読めない行があるとパソコン側が止まるので、その行は「#」を付けてメモ扱いにする
+  const last = list[list.length - 1];
+  const laps = (localStorage.getItem(lapsKey(id)) || "").trim().split(/\r?\n/)
+    .map(line => Number.isNaN(parseLap(line, last.offset + last.dur)) ? "# （読めなかった行）" + line : line)
+    .join("\r\n");
   // いちばん多かった向きを使う（記録がない古い録画は「なし」）
   const count = {};
   for (const s of list) if (s.rot) count[s.rot] = (count[s.rot] || 0) + 1;
   const rot = Object.keys(count).sort((a, b) => count[b] - count[a])[0] || "なし";
+  const cut = loadCut();
   return [
     "# 波を切り出す 設定ファイル（波撮りカメラが作りました）",
     "# このファイルと録画を「nami-cut」フォルダに入れて、",
     "# このファイルを「波を切り出す.bat」の上にドラッグしてください。",
     "",
     "動画 = nami_" + id + "_*." + extOf(list[0].type),
+    "# この録画は " + list.length + " 本に分かれています。全部入れてください：",
+    ...list.map(x => "#   " + fileName(x)),
     "",
     "# 押した時刻の何秒前から・何秒後まで切り出すか",
-    "前 = 30",
-    "後 = 3",
+    "前 = " + cut.before,
+    "後 = " + cut.after,
     "",
     "# 自分のところを拡大する（1 = そのまま、2 = 2倍）",
     "# 位置は 左右, 上下 を 0〜100 で（50, 50 がまん中）",
-    "拡大 = 1",
-    "位置 = 50, 50",
+    "拡大 = " + cut.zoom,
+    "位置 = " + cut.x + ", " + cut.y,
     "",
     "# 映像が横倒しのときに起こす向き（左 / 右 / 180 / なし）",
     "# 空が右に倒れていたら 左、空が左に倒れていたら 右",
