@@ -180,7 +180,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.0";
+const VERSION = "1.1";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -305,7 +305,7 @@ function dbDeleteSeg(id) {
 // データベースに入れる形（録画係などの部品は入れない）
 function segRecord(seg) {
   const r = { session: seg.session, no: seg.no, offset: seg.offset,
-              dur: seg.dur, size: seg.size, type: seg.type, w: seg.w, h: seg.h };
+              dur: seg.dur, size: seg.size, type: seg.type, w: seg.w, h: seg.h, rot: seg.rot || "" };
   if (seg.id !== undefined) r.id = seg.id; // 最初の1回は番号をデータベースに付けてもらう
   return r;
 }
@@ -409,7 +409,9 @@ async function updateInfo() {
     const s = track.getSettings();
     if (s.width) {
       parts.push("映像 <b>" + s.width + "×" + s.height + "</b>");
-      if (s.width < s.height) parts.push("<b style='color:#ffb84d'>たて向きです。横向きに置いてください</b>");
+      if (s.width < s.height) parts.push(sidewaysRotation()
+        ? "<b style='color:#ffb84d'>スマホの「自動回転」がオフなので、映像は横倒しで録れます（パソコンで自動で起こします）</b>"
+        : "<b style='color:#ffb84d'>たて向きです。横向きに置いてください</b>");
     }
   }
   const free = await freeBytes();
@@ -537,7 +539,7 @@ async function startSegment() {
   const set = track.getSettings();
   const seg = { session: sessionId, no: ++segNo, offset: (Date.now() - T0) / 1000,
                 dur: 0, size: 0, type: mimeType || "video/webm", w: set.width || 0, h: set.height || 0,
-                n: 0, t0: 0 };
+                rot: sidewaysRotation(), n: 0, t0: 0 };
   seg.id = await dbAddSeg(segRecord(seg));
   const opts = { videoBitsPerSecond: QUALITY[selQuality.value].bps, audioBitsPerSecond: 128000 };
   if (mimeType) opts.mimeType = mimeType;
@@ -636,6 +638,27 @@ async function keepScreenOn() {
       wakeLock.addEventListener("release", () => { wakeLock = null; });
     }
   } catch { /* 対応していない機種でも録画は続ける */ }
+}
+
+// ---------- スマホの傾き ----------
+// 「自動回転」がオフだと、横に構えても画面はたてのまま＝映像も横倒しで録れる。
+// 重力の向きから「横に構えているか」を見分けて、パソコン側で起こせるように記録する
+let gravity = null, lastSideways = "";
+window.addEventListener("devicemotion", e => {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x === null) return;
+  gravity = { x: g.x, y: g.y };
+  const now = sidewaysRotation();
+  if (now !== lastSideways) { lastSideways = now; updateInfo(); }
+});
+// 横倒しで録れているとき、起こすのに必要な向き（左 = 反時計回り / 右 = 時計回り）。そうでなければ ""
+function sidewaysRotation() {
+  const track = stream && stream.getVideoTracks()[0];
+  const set = track ? track.getSettings() : {};
+  if (!gravity || !set.width || set.width >= set.height) return "";
+  const { x, y } = gravity;
+  if (Math.abs(x) < 6 || Math.abs(x) < Math.abs(y) * 1.5) return "";
+  return x > 0 ? "左" : "右"; // 上の辺を左へ倒すと x が＋になり、空が映像の右に来る
 }
 
 // ---------- 画面を暗くする ----------
@@ -784,6 +807,10 @@ async function saveAll(id, list, btn) {
 // パソコンの「波を切り出す」にそのまま渡せる設定ファイルを作る
 function lapsFile(id, list) {
   const laps = (localStorage.getItem(lapsKey(id)) || "").trim();
+  // いちばん多かった向きを使う（記録がない古い録画は「なし」）
+  const count = {};
+  for (const s of list) if (s.rot) count[s.rot] = (count[s.rot] || 0) + 1;
+  const rot = Object.keys(count).sort((a, b) => count[b] - count[a])[0] || "なし";
   return [
     "# 波を切り出す 設定ファイル（波撮りカメラが作りました）",
     "# このファイルと録画を「nami-cut」フォルダに入れて、",
@@ -799,6 +826,10 @@ function lapsFile(id, list) {
     "# 位置は 左右, 上下 を 0〜100 で（50, 50 がまん中）",
     "拡大 = 1",
     "位置 = 50, 50",
+    "",
+    "# 映像が横倒しのときに起こす向き（左 / 右 / 180 / なし）",
+    "# 空が右に倒れていたら 左、空が左に倒れていたら 右",
+    "回転 = " + rot,
     "",
     "# ラップタイム（時計に残った数字を1行ずつ）",
     laps || "# ← ここに書く",
