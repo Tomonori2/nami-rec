@@ -231,7 +231,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.4";
+const VERSION = "1.5";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -1014,6 +1014,9 @@ async function exportWaves(list, laps, baseName) {
   if (!pieces.length) { alert("その時間の映像はありません（画面を消していた間などは撮れていません）"); return; }
   const cut = loadCut();
   const totalSec = pieces.reduce((a, p) => a + p.to - p.from, 0);
+  // 音の係はボタンを押した直後に作る（時間がたってから作ると、スマホが音を止めてしまうことがある）
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  ac.resume().catch(() => {});
   const job = cutJob = { stop: false };
   const cover = $("cutCover"), msg = $("cutMsg"), bar = $("cutBar").firstElementChild;
   cover.classList.add("show");
@@ -1021,21 +1024,40 @@ async function exportWaves(list, laps, baseName) {
   bar.style.width = "0";
   await keepScreenOn();
 
+  // 見えない再生画面。画面の外に出したり隠したりすると、スマホは省電力で再生を止めてしまうので、
+  // 画面の中にごく小さく、ほぼ透明にして置く
   const v = document.createElement("video");
   v.playsInline = true;
-  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  v.style.cssText = "position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:60";
+  document.body.appendChild(v);
   const dest = ac.createMediaStreamDestination();
   ac.createMediaElementSource(v).connect(dest); // 音はスピーカーに出さず、録画にだけ入れる
   const ctx = cutCanvas.getContext("2d");
   let rec = null, chunks = [], done = 0, urls = [];
+  // 合図（イベント）を待つ。来なければ時間切れで止める。「やめる」が押されたらすぐ抜ける
+  const waitFor = (name, ms, what) => new Promise((ok, ng) => {
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      if (job.stop) { clean(); ok(); }
+      else if (Date.now() - t0 > ms) { clean(); ng(new Error(what + "で止まりました")); }
+    }, 200);
+    const on = () => { clean(); ok(); };
+    const bad = () => { clean(); ng(new Error("録画を開けませんでした")); };
+    const clean = () => { clearInterval(timer); v.removeEventListener(name, on); v.removeEventListener("error", bad); };
+    v.addEventListener(name, on);
+    v.addEventListener("error", bad);
+  });
 
   try {
     for (let i = 0; i < pieces.length && !job.stop; i++) {
       const p = pieces[i];
+      msg.textContent = "録画を読みこみ中…（" + (i + 1) + "/" + pieces.length + "）";
       const url = URL.createObjectURL(await dbGetBlob(p.seg));
       urls.push(url);
+      const loaded = waitFor("loadedmetadata", 30000, "録画の読みこみ");
       v.src = url;
-      await new Promise((ok, ng) => { v.onloadedmetadata = ok; v.onerror = () => ng(new Error("録画を開けませんでした")); });
+      await loaded;
+      if (job.stop) break;
       // 起こしたあとの縦横と、拡大で切り取る場所（パソコン側と同じ計算）
       const side = p.seg.rot === "左" || p.seg.rot === "右";
       const uw = side ? v.videoHeight : v.videoWidth, uh = side ? v.videoWidth : v.videoHeight;
@@ -1062,20 +1084,32 @@ async function exportWaves(list, laps, baseName) {
         else if (p.seg.rot === "右") { ctx.translate(v.videoHeight, 0); ctx.rotate(Math.PI / 2); }
         ctx.drawImage(v, 0, 0);
       };
+      msg.textContent = "場面へ移動中…";
+      const seeked = waitFor("seeked", 30000, "場面への移動");
       v.currentTime = p.from;
-      await new Promise(ok => { v.onseeked = ok; });
+      await seeked;
+      if (job.stop) break;
       draw();
       await v.play();
       if (rec.state === "inactive") rec.start(1000);
       else if (rec.state === "paused") rec.resume();
-      await new Promise(ok => {
+      // 1コマごとの合図だけに頼らず、画面の書きかえごとに描く。
+      // 見張り役：4秒進まなければ再生をかけ直し、12秒進まなければあきらめて理由を出す
+      await new Promise((ok, ng) => {
+        let lastT = v.currentTime, lastMove = Date.now(), kicked = false;
         const step = () => {
           if (job.stop || v.ended || v.currentTime >= p.to) { ok(); return; }
+          const now = Date.now();
+          if (v.currentTime !== lastT) { lastT = v.currentTime; lastMove = now; kicked = false; }
+          else if (document.visibilityState !== "visible") lastMove = now; // 画面が消えている間は数えない
+          else if (now - lastMove > 12000) {
+            ng(new Error("再生が進まなくなりました（" + Math.floor(done + v.currentTime - p.from) + "秒目）")); return;
+          } else if (now - lastMove > 4000 && !kicked) { kicked = true; v.play().catch(() => {}); }
           draw();
           const t = done + Math.max(0, v.currentTime - p.from);
           bar.style.width = Math.min(100, t / totalSec * 100) + "%";
           msg.textContent = "切り出し中… " + Math.floor(t) + " / " + Math.ceil(totalSec) + "秒";
-          if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(step); else requestAnimationFrame(step);
+          requestAnimationFrame(step);
         };
         step();
       });
@@ -1096,7 +1130,7 @@ async function exportWaves(list, laps, baseName) {
   } catch (err) {
     setStatus("切り出せませんでした（" + (err && err.message || err) + "）", true);
   } finally {
-    v.pause(); v.removeAttribute("src");
+    v.pause(); v.removeAttribute("src"); v.remove();
     urls.forEach(u => URL.revokeObjectURL(u));
     ac.close().catch(() => {});
     if (!recording && wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
@@ -1105,6 +1139,10 @@ async function exportWaves(list, laps, baseName) {
   }
 }
 $("cutStop").onclick = () => { if (cutJob) cutJob.stop = true; };
+document.addEventListener("visibilitychange", () => {
+  if (cutJob && document.visibilityState === "visible")
+    setStatus("切り出しの途中で画面が消えました。そのまま続きを作っています", true);
+});
 
 // ---------- 再生 ----------
 let playURL = null;
