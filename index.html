@@ -231,7 +231,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.5";
+const VERSION = "1.6";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -1034,6 +1034,7 @@ async function exportWaves(list, laps, baseName) {
   ac.createMediaElementSource(v).connect(dest); // 音はスピーカーに出さず、録画にだけ入れる
   const ctx = cutCanvas.getContext("2d");
   let rec = null, chunks = [], done = 0, urls = [];
+  let recMs = 0, recFrom = 0;   // 実際に録った時間（予定より短くなっていないか確かめる）
   // 合図（イベント）を待つ。来なければ時間切れで止める。「やめる」が押されたらすぐ抜ける
   const waitFor = (name, ms, what) => new Promise((ok, ng) => {
     const t0 = Date.now();
@@ -1089,16 +1090,29 @@ async function exportWaves(list, laps, baseName) {
       v.currentTime = p.from;
       await seeked;
       if (job.stop) break;
+      // 本当にその場所に着いたか（スマホでは飛び先がずれることがある）
+      if (Math.abs(v.currentTime - p.from) > 2) {
+        throw new Error("録画の途中へ飛べませんでした（" + Math.round(p.from) + "秒目へ飛ぼうとして、"
+          + Math.round(v.currentTime) + "秒目に着きました／録画の長さ " + Math.round(v.duration) + "秒）");
+      }
       draw();
       await v.play();
       if (rec.state === "inactive") rec.start(1000);
       else if (rec.state === "paused") rec.resume();
+      recFrom = performance.now();
       // 1コマごとの合図だけに頼らず、画面の書きかえごとに描く。
       // 見張り役：4秒進まなければ再生をかけ直し、12秒進まなければあきらめて理由を出す
       await new Promise((ok, ng) => {
         let lastT = v.currentTime, lastMove = Date.now(), kicked = false;
         const step = () => {
-          if (job.stop || v.ended || v.currentTime >= p.to) { ok(); return; }
+          if (job.stop || v.currentTime >= p.to) { ok(); return; }
+          if (v.ended) {
+            if (v.currentTime < p.to - 1.5) {
+              ng(new Error("予定より早く録画の終わりに着きました（" + Math.round(v.currentTime) + "秒目で終わり／予定は"
+                + Math.round(p.to) + "秒目まで）")); return;
+            }
+            ok(); return;
+          }
           const now = Date.now();
           if (v.currentTime !== lastT) { lastT = v.currentTime; lastMove = now; kicked = false; }
           else if (document.visibilityState !== "visible") lastMove = now; // 画面が消えている間は数えない
@@ -1115,6 +1129,7 @@ async function exportWaves(list, laps, baseName) {
       });
       v.pause();
       if (rec.state === "recording") rec.pause(); // 次のかけらへ移る間は録らない
+      recMs += performance.now() - recFrom;
       done += p.to - p.from;
     }
     if (rec && rec.state !== "inactive") {
@@ -1123,7 +1138,12 @@ async function exportWaves(list, laps, baseName) {
     if (!job.stop && chunks.length) {
       const blob = new Blob(chunks, { type: rec.mimeType || "video/webm" });
       download(blob, baseName + (blob.type.includes("mp4") ? "mp4" : "webm"));
-      setStatus("ダウンロードフォルダに保存しました（" + Math.round(totalSec) + "秒）");
+      const got = recMs / 1000;
+      if (got < totalSec * 0.8) {
+        setStatus("⚠ 保存しましたが、予定" + Math.round(totalSec) + "秒のうち" + Math.round(got) + "秒しか録れませんでした", true);
+      } else {
+        setStatus("ダウンロードフォルダに保存しました（予定" + Math.round(totalSec) + "秒・録れた長さ" + Math.round(got) + "秒）");
+      }
     } else if (job.stop) {
       setStatus("切り出しをやめました");
     }
