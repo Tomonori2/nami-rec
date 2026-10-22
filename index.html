@@ -186,6 +186,7 @@
     <span>左右 <b id="cutXVal"></b></span><input type="range" id="cutX" min="0" max="100" step="5">
     <span>上下 <b id="cutYVal"></b></span><input type="range" id="cutY" min="0" max="100" step="5">
   </div>
+  <div class="chk"><input type="checkbox" id="cutFollow"><label for="cutFollow" style="margin:0">乗っている人を追いかけて拡大する（パソコンで切り出すとき）</label></div>
   <div class="note">左右・上下は拡大する場所です（0 = 左はし・上はし、50 = まん中、100 = 右はし・下はし）。</div>
 </div>
 
@@ -231,7 +232,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.6";
+const VERSION = "1.7";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -279,7 +280,7 @@ chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" :
 selCam.onchange = () => { localStorage.setItem("nr_cam", selCam.value); openCamera(); };
 
 // 切り出しの設定（パソコンに渡すメモに書く数字）
-const CUT_DEFAULT = { before: 30, after: 3, zoom: "1", x: 50, y: 50 };
+const CUT_DEFAULT = { before: 30, after: 3, zoom: "1", x: 50, y: 50, follow: false };
 function loadCut() {
   try { return { ...CUT_DEFAULT, ...JSON.parse(localStorage.getItem("nr_cut") || "{}") }; }
   catch { return { ...CUT_DEFAULT }; }
@@ -287,18 +288,19 @@ function loadCut() {
 function showCut() {
   const c = loadCut();
   $("cutBefore").value = c.before; $("cutAfter").value = c.after; $("cutZoom").value = c.zoom;
-  $("cutX").value = c.x; $("cutY").value = c.y;
+  $("cutX").value = c.x; $("cutY").value = c.y; $("cutFollow").checked = !!c.follow;
   $("cutXVal").textContent = c.x; $("cutYVal").textContent = c.y;
 }
 function saveCut() {
   const num = (el, lo, hi, d) => { const v = parseFloat(el.value); return isNaN(v) ? d : Math.min(hi, Math.max(lo, v)); };
   const c = { before: num($("cutBefore"), 5, 90, 30), after: num($("cutAfter"), 0, 20, 3),
-              zoom: $("cutZoom").value, x: num($("cutX"), 0, 100, 50), y: num($("cutY"), 0, 100, 50) };
+              zoom: $("cutZoom").value, x: num($("cutX"), 0, 100, 50), y: num($("cutY"), 0, 100, 50),
+              follow: $("cutFollow").checked };
   localStorage.setItem("nr_cut", JSON.stringify(c));
   showCut();
   renderList(); // 「場面を見る」の位置は前の余白で変わる
 }
-for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY"]) $(id).addEventListener("change", saveCut);
+for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY", "cutFollow"]) $(id).addEventListener("change", saveCut);
 for (const id of ["cutX", "cutY"]) $(id).addEventListener("input", () => { $(id + "Val").textContent = $(id).value; });
 showCut();
 
@@ -1243,6 +1245,9 @@ function lapsFile(id, list) {
     "# 位置は 左右, 上下 を 0〜100 で（50, 50 がまん中）",
     "拡大 = " + cut.zoom,
     "位置 = " + cut.x + ", " + cut.y,
+    "# 拡大するとき、乗っている人を探して枠を追いかけさせる（する / しない）",
+    "# 見つからない波は、上の位置に固定して切り出します",
+    "追いかけ = " + (cut.follow ? "する" : "しない"),
     "",
     "# 映像が横倒しのときに起こす向き（左 / 右 / 180 / なし）",
     "# 空が右に倒れていたら 左、空が左に倒れていたら 右",
