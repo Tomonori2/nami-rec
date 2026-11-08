@@ -33,6 +33,22 @@
     background: rgba(0,0,0,.75); }
   #camMsg[hidden] { display: none; }
 
+  /* 仕上がりの枠（パソコンで拡大する範囲）と水平器 */
+  #cropBox { position: absolute; border: 3px solid #ffd479; border-radius: 4px; pointer-events: none;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.28); display: none; }
+  #cropBox span { position: absolute; top: -26px; left: 0; background: #ffd479; color: #06202e;
+    font-size: 12px; font-weight: bold; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
+  #levelLine { position: absolute; left: 6%; right: 6%; top: 50%; height: 0; border-top: 2px dashed #ffffffcc;
+    pointer-events: none; display: none; transform-origin: 50% 50%; }
+  #levelLine.ok { border-top-color: #4ade80; }
+  #levelTag { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.6); color: #fff;
+    font-size: 13px; font-weight: bold; padding: 3px 10px; border-radius: 14px; display: none; }
+  #levelTag.ok { color: #4ade80; }
+  #levelTag.ng { color: #ffb84d; }
+  #zoomPeek { width: 100%; aspect-ratio: 16 / 9; display: none; margin-top: 8px; border-radius: 10px;
+    background: #000; border: 2px solid #ffd479; }
+  #peekNote { font-size: 12px; color: #a9c9d6; text-align: center; margin-top: 4px; display: none; }
+
   /* 経過時間 */
   #elapsed { font-size: 56px; font-weight: bold; text-align: center; letter-spacing: 2px;
     font-variant-numeric: tabular-nums; margin: 10px 0 2px; line-height: 1.1; }
@@ -118,12 +134,18 @@
 
 <div id="videoWrap">
   <video id="preview" muted playsinline autoplay></video>
+  <div id="cropBox"><span id="cropLabel"></span></div>
+  <div id="levelLine"></div>
+  <div id="levelTag"></div>
   <div id="recBadge">録画中</div>
   <div id="camMsg">
     <div id="camMsgText">カメラを準備しています…</div>
     <button id="btnCam" style="padding:12px 24px;background:#12506a;font-size:16px" hidden>カメラを起動する</button>
   </div>
 </div>
+
+<canvas id="zoomPeek"></canvas>
+<div id="peekNote">↑ パソコンで拡大したときの見え方（映像をさわると枠が動きます）</div>
 
 <div id="elapsed">0:00:00</div>
 <div id="status"></div>
@@ -187,7 +209,7 @@
     <span>上下 <b id="cutYVal"></b></span><input type="range" id="cutY" min="0" max="100" step="5">
   </div>
   <div class="chk"><input type="checkbox" id="cutFollow"><label for="cutFollow" style="margin:0">乗っている人を追いかけて拡大する（パソコンで切り出すとき）</label></div>
-  <div class="note">左右・上下は拡大する場所です（0 = 左はし・上はし、50 = まん中、100 = 右はし・下はし）。</div>
+  <div class="note">左右・上下は拡大する場所です（0 = 左はし・上はし、50 = まん中、100 = 右はし・下はし）。拡大を選ぶと、上の映像に黄色い枠が出ます。映像をさわると、その場所に枠が動きます。</div>
 </div>
 
 <h2>撮った録画</h2>
@@ -232,7 +254,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.7";
+const VERSION = "1.8";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -298,6 +320,7 @@ function saveCut() {
               follow: $("cutFollow").checked };
   localStorage.setItem("nr_cut", JSON.stringify(c));
   showCut();
+  if (typeof drawCrop === "function") drawCrop();
   renderList(); // 「場面を見る」の位置は前の余白で変わる
 }
 for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY", "cutFollow"]) $(id).addEventListener("change", saveCut);
@@ -765,6 +788,93 @@ async function keepScreenOn() {
   } catch { /* 対応していない機種でも録画は続ける */ }
 }
 
+// ---------- 仕上がりの枠 ----------
+// 設定の「拡大・左右・上下」から、パソコンで切り出す範囲を映像の上に四角で出す。
+// 映像をさわると、その場所が枠のまん中になるように左右・上下を変える（設定にも残る）
+const cropBox = $("cropBox"), peek = $("zoomPeek"), peekCtx = peek.getContext("2d");
+let peekLast = 0;
+
+// 画面の中で、映像が実際に映っている四角（左右や上下の黒い余白を除く）
+function videoRect() {
+  const vw = preview.videoWidth, vh = preview.videoHeight;
+  const W = videoWrap.clientWidth, H = videoWrap.clientHeight;
+  if (!vw || !vh || !W || !H) return null;
+  const k = Math.min(W / vw, H / vh);
+  return { x: (W - vw * k) / 2, y: (H - vh * k) / 2, w: vw * k, h: vh * k, vw, vh };
+}
+// 切り出す範囲（映像の元の大きさでの位置）。拡大しない設定や、横倒しの映像のときは null
+function cropArea() {
+  const c = loadCut(), z = parseFloat(c.zoom) || 1;
+  const vw = preview.videoWidth, vh = preview.videoHeight;
+  if (z <= 1 || !vw || !vh || vw < vh) return null;
+  const cw = vw / z, ch = vh / z;
+  return { x: (vw - cw) * c.x / 100, y: (vh - ch) * c.y / 100, w: cw, h: ch, z };
+}
+function drawCrop() {
+  const r = videoRect(), a = cropArea();
+  const show = !!(r && a && stream && preview.srcObject);
+  cropBox.style.display = show ? "block" : "none";
+  peek.style.display = $("peekNote").style.display = show && !recording ? "block" : "none";
+  if (!show) return;
+  const k = r.w / r.vw;
+  cropBox.style.left = (r.x + a.x * k) + "px";
+  cropBox.style.top = (r.y + a.y * k) + "px";
+  cropBox.style.width = (a.w * k) + "px";
+  cropBox.style.height = (a.h * k) + "px";
+  $("cropLabel").textContent = a.z + "倍で切り出す範囲";
+}
+// 小窓：枠の中を大きく映す（録画していないときだけ。録画中は熱を減らすため止める）
+function peekLoop(ts) {
+  requestAnimationFrame(peekLoop);
+  if (recording || peek.style.display === "none" || ts - peekLast < 100) return;   // 1秒に10回で十分
+  peekLast = ts;
+  const a = cropArea();
+  if (!a) return;
+  const w = peek.clientWidth;
+  if (peek.width !== w * 2) { peek.width = w * 2; peek.height = Math.round(w * 2 * 9 / 16); }
+  try { peekCtx.drawImage(preview, a.x, a.y, a.w, a.h, 0, 0, peek.width, peek.height); } catch { /* 準備中 */ }
+}
+requestAnimationFrame(peekLoop);
+videoWrap.addEventListener("click", e => {
+  const r = videoRect(), a = cropArea();
+  if (!r || !a || recording) return;
+  const box = videoWrap.getBoundingClientRect();
+  const k = r.w / r.vw;
+  // 映像の元の大きさでの位置（ふちの太さのぶんを引く）
+  const cx = (e.clientX - box.left - videoWrap.clientLeft - r.x) / k, cy = (e.clientY - box.top - videoWrap.clientTop - r.y) / k;
+  const pct = (c, size, full) => full > size ? Math.round(Math.min(100, Math.max(0, (c - size / 2) / (full - size) * 100))) : 50;
+  $("cutX").value = pct(cx, a.w, r.vw);
+  $("cutY").value = pct(cy, a.h, r.vh);
+  saveCut();
+});
+window.addEventListener("resize", drawCrop);
+preview.addEventListener("loadedmetadata", drawCrop);
+setInterval(drawCrop, 1000);   // 録画の開始・停止や設定の変更に合わせて描き直す
+
+// ---------- 水平器 ----------
+// 重力の向きを、いま画面に映っている向き（上・右）に直して、傾きの角度を出す。
+// 点線は「本当の水平」。海の水平線と重なれば、まっすぐ撮れている
+let levelSmooth = null;
+function updateLevel() {
+  const line = $("levelLine"), tag = $("levelTag");
+  if (!gravity || !stream || !preview.srcObject) { line.style.display = tag.style.display = "none"; return; }
+  const ang = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  const { x, y } = gravity;
+  // 画面の「右」と「上」の向きの重力の大きさ
+  const [R, U] = ang === 90 ? [-y, x] : ang === 180 ? [-x, -y] : (ang === 270 || ang === -90) ? [y, -x] : [x, y];
+  let deg = Math.atan2(R, U) * 180 / Math.PI;     // ＋なら左が下がっている／－なら右が下がっている
+  if (Math.abs(deg) > 45) { line.style.display = tag.style.display = "none"; return; }   // 画面が横になっていない
+  levelSmooth = levelSmooth === null ? deg : levelSmooth * 0.8 + deg * 0.2;
+  deg = levelSmooth;
+  const ok = Math.abs(deg) < 1;
+  line.style.display = tag.style.display = "block";
+  line.style.transform = `rotate(${deg.toFixed(2)}deg)`;
+  line.classList.toggle("ok", ok);
+  tag.className = ok ? "ok" : "ng";
+  tag.textContent = ok ? "水平 ✓" : (deg < 0 ? "右" : "左") + "が下がっています " + Math.abs(deg).toFixed(1) + "°";
+}
+setInterval(updateLevel, 150);
+
 // ---------- スマホの傾き ----------
 // 「自動回転」がオフだと、横に構えても画面はたてのまま＝映像も横倒しで録れる。
 // 重力の向きから「横に構えているか」を見分けて、パソコン側で起こせるように記録する
@@ -772,7 +882,7 @@ let gravity = null, lastSideways = "";
 window.addEventListener("devicemotion", e => {
   const g = e.accelerationIncludingGravity;
   if (!g || g.x === null) return;
-  gravity = { x: g.x, y: g.y };
+  gravity = { x: g.x, y: g.y, z: g.z };
   const now = sidewaysRotation();
   if (now !== lastSideways) { lastSideways = now; updateInfo(); }
 });
