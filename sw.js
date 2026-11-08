@@ -1,12 +1,13 @@
 // 波撮りカメラ サービスワーカー（オフラインで動かすための仕組み）
 // 役割：一度開いたファイルを"端末内"に保存し、次からネットなしでも開けるようにする
-const CACHE = "nami-rec-v10";
+const CACHE = "nami-rec-v11";
 const ASSETS = [
   "./",
   "index.html",
   "app2.webmanifest",
-  "icon-192.png",
-  "icon-512.png"
+  "icon-joe-192.png",
+  "icon-joe-512.png",
+  "icon-joe-maskable-512.png"
 ];
 
 // 初回：必要なファイルを端末内にキャッシュ
