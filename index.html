@@ -195,6 +195,12 @@
   </div>
   <div class="note" id="focusNone" hidden>このスマホは、アプリからピントを固定できません（自動で合わせ続けます）。</div>
 
+  <div id="expBox" hidden>
+    <label for="rngExp">撮るときの明るさ <span id="expVal"></span></label>
+    <input type="range" id="rngExp">
+    <div class="note">曇りや雨で暗い日は、右へ少し（＋0.3〜＋0.7くらい）。あとで明るくするより、ざらつきが少なくきれいに録れます。上げすぎると白い波が真っ白につぶれるので、上の映像で波の形が見えるか確かめてください。</div>
+  </div>
+
   <div class="chk"><input type="checkbox" id="chkMic"><label for="chkMic" style="margin:0">波の音も録る</label></div>
 
   <label style="margin-top:18px">パソコンで切り出すときの設定</label>
@@ -205,6 +211,9 @@
     <span>拡大</span><select id="cutZoom">
       <option value="1">しない</option><option value="1.5">1.5倍</option>
       <option value="2">2倍</option><option value="3">3倍</option></select>
+    <span>明るさ</span><select id="cutBright">
+      <option value="なし">そのまま</option><option value="弱め">弱め</option>
+      <option value="真ん中">真ん中（曇り・雨の日）</option><option value="強め">強め</option></select>
     <span>左右 <b id="cutXVal"></b></span><input type="range" id="cutX" min="0" max="100" step="5">
     <span>上下 <b id="cutYVal"></b></span><input type="range" id="cutY" min="0" max="100" step="5">
   </div>
@@ -254,7 +263,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.8.2";
+const VERSION = "1.9";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -302,7 +311,12 @@ chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" :
 selCam.onchange = () => { localStorage.setItem("nr_cam", selCam.value); openCamera(); };
 
 // 切り出しの設定（パソコンに渡すメモに書く数字）
-const CUT_DEFAULT = { before: 30, after: 3, zoom: "1", x: 50, y: 50, follow: false };
+const CUT_DEFAULT = { before: 30, after: 3, zoom: "1", x: 50, y: 50, follow: false, bright: "なし" };
+// 切り出すときの明るさ（v1.9）。パソコン（波を切り出す）の「明るさ =」と同じ名前。
+// スマホで切り出すときと小窓の見本は、近い見た目になるキャンバスの filter で代わりにかける
+const CANVAS_BRIGHT = { "なし": "none", "弱め": "brightness(1.06) contrast(1.06) saturate(1.12)",
+  "真ん中": "brightness(1.15) contrast(1.12) saturate(1.25)", "強め": "brightness(1.25) contrast(1.15) saturate(1.3)" };
+const brightFilter = () => CANVAS_BRIGHT[loadCut().bright] || "none";
 function loadCut() {
   try { return { ...CUT_DEFAULT, ...JSON.parse(localStorage.getItem("nr_cut") || "{}") }; }
   catch { return { ...CUT_DEFAULT }; }
@@ -311,19 +325,20 @@ function showCut() {
   const c = loadCut();
   $("cutBefore").value = c.before; $("cutAfter").value = c.after; $("cutZoom").value = c.zoom;
   $("cutX").value = c.x; $("cutY").value = c.y; $("cutFollow").checked = !!c.follow;
+  $("cutBright").value = CANVAS_BRIGHT[c.bright] ? c.bright : "なし";
   $("cutXVal").textContent = c.x; $("cutYVal").textContent = c.y;
 }
 function saveCut() {
   const num = (el, lo, hi, d) => { const v = parseFloat(el.value); return isNaN(v) ? d : Math.min(hi, Math.max(lo, v)); };
   const c = { before: num($("cutBefore"), 5, 90, 30), after: num($("cutAfter"), 0, 20, 3),
               zoom: $("cutZoom").value, x: num($("cutX"), 0, 100, 50), y: num($("cutY"), 0, 100, 50),
-              follow: $("cutFollow").checked };
+              follow: $("cutFollow").checked, bright: $("cutBright").value };
   localStorage.setItem("nr_cut", JSON.stringify(c));
   showCut();
   if (typeof drawCrop === "function") drawCrop();
   renderList(); // 「場面を見る」の位置は前の余白で変わる
 }
-for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY", "cutFollow"]) $(id).addEventListener("change", saveCut);
+for (const id of ["cutBefore", "cutAfter", "cutZoom", "cutX", "cutY", "cutFollow", "cutBright"]) $(id).addEventListener("change", saveCut);
 for (const id of ["cutX", "cutY"]) $(id).addEventListener("input", () => { $(id + "Val").textContent = $(id).value; });
 showCut();
 
@@ -445,6 +460,7 @@ async function openCamera() {
   track.addEventListener("ended", onTrackLost);
   setupZoom(track);
   setupFocus(track);
+  setupExposure(track);
   listCameras();
   updateInfo();
 }
@@ -535,6 +551,28 @@ async function applyFocus(tell) {
   }
 }
 selFocus.onchange = () => { localStorage.setItem("nr_focus", selFocus.value); applyFocus(true); };
+
+// 撮るときの明るさ（露出補正。v1.9・対応しているスマホだけ出す）
+// 曇りや雨の日は暗く録れる。あとで明るくするより、撮る時点で上げた方がざらつきが少ない
+const rngExp = $("rngExp");
+function setupExposure(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const c = caps.exposureCompensation;
+  if (!c || !(c.max > c.min)) { $("expBox").hidden = true; return; }
+  $("expBox").hidden = false;
+  rngExp.min = c.min; rngExp.max = c.max; rngExp.step = c.step || 0.1;
+  const saved = parseFloat(localStorage.getItem("nr_exp"));
+  rngExp.value = saved >= c.min && saved <= c.max ? saved : Math.min(c.max, Math.max(c.min, 0));
+  applyExposure();
+}
+function applyExposure() {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track) return;
+  const e = parseFloat(rngExp.value);
+  $("expVal").textContent = (e > 0 ? "+" : "") + e.toFixed(1);
+  track.applyConstraints({ advanced: [{ exposureCompensation: e }] }).catch(() => {});
+}
+rngExp.oninput = () => { localStorage.setItem("nr_exp", rngExp.value); applyExposure(); };
 
 // ---------- 画面の下の情報（映像の大きさ・あと何分撮れるか・電池）----------
 async function freeBytes() {
@@ -832,6 +870,7 @@ function peekLoop(ts) {
   if (!a) return;
   const w = peek.clientWidth;
   if (peek.width !== w * 2) { peek.width = w * 2; peek.height = Math.round(w * 2 * 9 / 16); }
+  peekCtx.filter = brightFilter();   // v1.9：小窓でも仕上がりの明るさを見せる
   try { peekCtx.drawImage(preview, a.x, a.y, a.w, a.h, 0, 0, peek.width, peek.height); } catch { /* 準備中 */ }
 }
 requestAnimationFrame(peekLoop);
@@ -1191,6 +1230,7 @@ async function exportWaves(list, laps, baseName) {
       }
       const draw = () => {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.filter = CANVAS_BRIGHT[cut.bright] || "none";   // v1.9：明るさ
         ctx.scale(cutCanvas.width / cw, cutCanvas.height / ch);
         ctx.translate(-cx, -cy);
         if (p.seg.rot === "左") { ctx.translate(0, v.videoWidth); ctx.rotate(-Math.PI / 2); }
@@ -1362,6 +1402,9 @@ function lapsFile(id, list) {
     "# 映像が横倒しのときに起こす向き（左 / 右 / 180 / なし）",
     "# 空が右に倒れていたら 左、空が左に倒れていたら 右",
     "回転 = " + rot,
+    "",
+    "# 曇りや雨の日の暗い映像を明るくする（なし / 弱め / 真ん中 / 強め）",
+    "明るさ = " + (CANVAS_BRIGHT[cut.bright] ? cut.bright : "なし"),
     "",
     "# ラップタイム（時計に残った数字を1行ずつ）",
     laps || "# ← ここに書く",
