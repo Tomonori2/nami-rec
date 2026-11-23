@@ -113,6 +113,7 @@
   #dimCover { background: #000; color: #3a3a3a; }
   #dimTime { font-size: 40px; font-variant-numeric: tabular-nums; }
   #dimMsg { font-size: 14px; margin-top: 12px; }
+  #dimBat { font-size: 15px; margin-top: 10px; }
   #playCover { background: rgba(0,0,0,.94); }
   #cutCover { background: rgba(0,0,0,.92); }
   #cutCanvas { max-width: 100%; max-height: 50vh; background: #000; border-radius: 8px; }
@@ -202,6 +203,7 @@
   </div>
 
   <div class="chk"><input type="checkbox" id="chkMic"><label for="chkMic" style="margin:0">波の音も録る</label></div>
+  <div class="chk"><input type="checkbox" id="chkAutoDim"><label for="chkAutoDim" style="margin:0">録画を始めて30秒たったら、自動で画面を暗くする（電池と熱の節約）</label></div>
 
   <label style="margin-top:18px">パソコンで切り出すときの設定</label>
   <div class="note" style="margin-bottom:8px">ここで決めた数字が、「保存」で出るメモ（laps_○○.txt）に最初から書きこまれます。</div>
@@ -244,6 +246,7 @@
 <div class="cover" id="dimCover">
   <div id="dimTime">0:00:00</div>
   <div id="dimMsg">録画中です。2回タップで元の画面に戻ります</div>
+  <div id="dimBat"></div>
 </div>
 
 <!-- スマホで切り出し中 -->
@@ -263,7 +266,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.9";
+const VERSION = "2.0";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -301,6 +304,9 @@ let tickTimer = null;
 let wakeLock = null;
 let gaps = 0;             // 途中で撮れなかった回数
 let lowWarned = false;    // 電池の注意を出したか（1回の録画で1度だけ）
+let batStart = null;      // v2.0：録画を始めたときの電池 {t, level}。減り方から「あと何時間もつか」を出す
+let batCharged = false;   // 録画中に一度でも充電したか（したら、もちの見積もりは出さない）
+let dimAt = 0;            // v2.0：この時刻になったら自動で画面を暗くする（0 = しない）
 let writeChain = Promise.resolve(); // 書きこみを順番どおりに行うための列
 
 // ---------- 設定の保存 ----------
@@ -308,6 +314,14 @@ selQuality.value = localStorage.getItem("nr_quality") || "fhd";
 chkMic.checked = localStorage.getItem("nr_mic") !== "off";
 selQuality.onchange = () => { localStorage.setItem("nr_quality", selQuality.value); openCamera(); };
 chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" : "off"); openCamera(); };
+// v2.0：録画を始めて30秒で自動で暗くする（はじめはオン）
+const chkAutoDim = $("chkAutoDim");
+chkAutoDim.checked = localStorage.getItem("nr_autodim") !== "off";
+chkAutoDim.onchange = () => {
+  localStorage.setItem("nr_autodim", chkAutoDim.checked ? "on" : "off");
+  if (!chkAutoDim.checked) dimAt = 0;
+  else if (recording && !$("dimCover").classList.contains("show")) dimAt = Date.now() + 30000;
+};
 selCam.onchange = () => { localStorage.setItem("nr_cam", selCam.value); openCamera(); };
 
 // 切り出しの設定（パソコンに渡すメモに書く数字）
@@ -605,6 +619,18 @@ async function updateInfo() {
       const low = b.level < 0.15 && !b.charging;
       parts.push((low ? "<b style='color:#ffb84d'>電池が少なくなっています " : "電池 <b>")
         + Math.round(b.level * 100) + "%</b>" + (b.charging ? "（充電中）" : ""));
+      // v2.0：録画中は、電池の減り方から「あと何時間もつか」を出し、録画ごとに記録する
+      if (recording && batStart) {
+        if (b.charging) batCharged = true;
+        const sec = (Date.now() - batStart.t) / 1000, drop = batStart.level - b.level;
+        let est = "";
+        if (b.charging || batCharged) est = "充電しながら録画中";
+        else if (sec >= 300 && drop >= 0.02) est = "この減り方なら あと約" + fmtLong(Math.max(0, b.level - 0.03) / (drop / sec));
+        else est = "もつ時間は、録画5分後から出ます";
+        parts.push(est);
+        $("dimBat").textContent = "電池 " + Math.round(b.level * 100) + "%　" + est;
+        try { localStorage.setItem(batKey(sessionId), JSON.stringify({ s: batStart.level, e: b.level, sec: Math.round(sec), chg: batCharged })); } catch { /* 記録できなくても録画は続ける */ }
+      }
       if (low && recording && !lowWarned) {
         lowWarned = true;
         setStatus("⚠ 電池が残り" + Math.round(b.level * 100) + "%です。止まる前にモバイルバッテリーをつないでください", true);
@@ -653,6 +679,9 @@ async function startRecording() {
   const d = new Date(T0);
   sessionId = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
   segNo = 0; gaps = 0; lowWarned = false;
+  batStart = null; batCharged = false; $("dimBat").textContent = "";
+  try { if (navigator.getBattery) { const b = await navigator.getBattery(); batStart = { t: T0, level: b.level }; batCharged = b.charging; } } catch { /* 電池が分からない機種 */ }
+  dimAt = chkAutoDim.checked ? T0 + 30000 : 0;
   recording = true;
   try {
     await startSegment();
@@ -764,6 +793,8 @@ function tick() {
   const t = fmtClock((now - T0) / 1000);
   elapsedEl.textContent = t;
   $("dimTime").textContent = t;
+  // v2.0：自動で画面を暗くする（海に入っている間に押し忘れても、電池と熱を守る）
+  if (dimAt && now >= dimAt && !$("dimCover").classList.contains("show")) { setDim(true); dimAt = 0; }
   if (curSeg && recorder && recorder.state === "recording" && now - curSeg.t0 >= SEG_SEC * 1000) {
     recorder.stop();
     startSegment().catch(() => restartAfterTrouble());
@@ -941,7 +972,11 @@ function setDim(on) {
   $("dimCover").classList.toggle("show", on);
   if (on) preview.srcObject = null;
   else if (stream && preview.srcObject !== stream) { preview.srcObject = stream; preview.play().catch(() => {}); }
+  // 録画中に明るく戻したら、1分さわらなければまた暗くする（v2.0）
+  if (!on && recording && chkAutoDim.checked) dimAt = Date.now() + 60000;
 }
+// さわっている間は、暗くするのを先にのばす
+document.addEventListener("pointerdown", () => { if (dimAt && recording) dimAt = Math.max(dimAt, Date.now() + 60000); }, { passive: true });
 btnDim.onclick = () => setDim(true);
 let lastTap = 0;
 $("dimCover").onclick = () => {
@@ -956,6 +991,14 @@ const extOf = type => type.includes("mp4") ? "mp4" : "webm";
 // ファイル名の最後の「○○s」が「ピーから何秒目に始まったか」。パソコン側がこれを読んで時計と合わせる
 const fileName = seg => "nami_" + seg.session + "_" + pad(seg.no) + "_" + seg.offset.toFixed(2) + "s." + extOf(seg.type);
 const lapsKey = session => "nr_laps_" + session;
+const batKey = session => "nr_bat_" + session;   // v2.0：録画ごとの電池の記録
+function batText(session) {
+  try {
+    const b = JSON.parse(localStorage.getItem(batKey(session)) || "null");
+    if (!b) return "";
+    return "電池 " + Math.round(b.s * 100) + "% → " + Math.round(b.e * 100) + "%（" + fmtLong(b.sec) + (b.chg ? "・途中で充電あり" : "") + "）";
+  } catch { return ""; }
+}
 
 async function renderList() {
   const segs = (await dbListSegs()).filter(s => s.size > 0);
@@ -1406,6 +1449,7 @@ function lapsFile(id, list) {
     "# 曇りや雨の日の暗い映像を明るくする（なし / 弱め / 真ん中 / 強め）",
     "明るさ = " + (CANVAS_BRIGHT[cut.bright] ? cut.bright : "なし"),
     "",
+    ...(batText(id) ? ["# この録画の " + batText(id), ""] : []),
     "# ラップタイム（時計に残った数字を1行ずつ）",
     laps || "# ← ここに書く",
     ""
