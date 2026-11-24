@@ -2,6 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<!-- CSP＝このページが通信してよい相手・動かしてよいプログラムの決まり。通信先を足したら connect-src にも足す -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>波撮りカメラ</title>
 <meta name="theme-color" content="#06202e">
@@ -266,7 +268,7 @@
 
 <script>
 "use strict";
-const VERSION = "2.0";
+const VERSION = "2.0.1";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
