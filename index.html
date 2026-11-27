@@ -110,6 +110,10 @@
     flex-direction: column; text-align: center; padding: 20px; }
   .cover.show { display: flex; }
   #countCover { background: rgba(0,0,0,.88); }
+  #noVideo { background: rgba(140,0,0,.94); z-index: 60; }
+  #noVideo b { font-size: 26px; line-height: 1.5; }
+  #noVideo p { font-size: 17px; line-height: 1.7; margin: 16px 0; }
+  #noVideo button { font-size: 18px; padding: 12px 24px; }
   #countNum { font-size: 180px; font-weight: bold; line-height: 1; }
   #countMsg { font-size: 20px; margin-top: 16px; line-height: 1.6; }
   #dimCover { background: #000; color: #3a3a3a; }
@@ -245,6 +249,11 @@
 </div>
 
 <!-- 暗い画面 -->
+<div class="cover" id="noVideo">
+  <b>⚠ 映像が録れていません</b>
+  <p>いまの録画は、音だけになっています。<br>録画を止めて、アプリを開き直してから撮り直してください。<br>（直らないときは、設定の画質を「軽い（HD）」にしてみてください）</p>
+  <button id="btnNoVideo">わかった</button>
+</div>
 <div class="cover" id="dimCover">
   <div id="dimTime">0:00:00</div>
   <div id="dimMsg">録画中です。2回タップで元の画面に戻ります</div>
@@ -268,7 +277,7 @@
 
 <script>
 "use strict";
-const VERSION = "2.0.1";
+const VERSION = "2.1";
 document.getElementById("verBadge").textContent = "v" + VERSION;
 
 // ---------- 調整できる数字 ----------
@@ -298,6 +307,8 @@ let recorder = null;      // 録画係（MediaRecorder）
 let recording = false;
 let starting = false;     // カウントダウン中
 let mimeType = "";
+let videoChecked = false; // v2.1：この録画で「映像が入っているか」をもう確かめたか
+let videoFails = 0;       // 映像が入っていなかった回数（形式を切りかえるたびに増える）
 let T0 = 0;               // 「ピー」の瞬間（＝時計のストップウォッチの0秒）
 let sessionId = "";       // 1回の録画のまとまりの名前（始めた日時）
 let segNo = 0;
@@ -316,9 +327,9 @@ selQuality.value = localStorage.getItem("nr_quality") || "fhd";
 chkMic.checked = localStorage.getItem("nr_mic") !== "off";
 selQuality.onchange = () => { localStorage.setItem("nr_quality", selQuality.value); openCamera(); };
 chkMic.onchange = () => { localStorage.setItem("nr_mic", chkMic.checked ? "on" : "off"); openCamera(); };
-// v2.0：録画を始めて30秒で自動で暗くする（はじめはオン）
+// v2.0：録画を始めて30秒で自動で暗くする。v2.1（11/27）からははじめはオフ（本人「省エネより、ちゃんと映ること」）
 const chkAutoDim = $("chkAutoDim");
-chkAutoDim.checked = localStorage.getItem("nr_autodim") !== "off";
+chkAutoDim.checked = localStorage.getItem("nr_autodim") === "on";
 chkAutoDim.onchange = () => {
   localStorage.setItem("nr_autodim", chkAutoDim.checked ? "on" : "off");
   if (!chkAutoDim.checked) dimAt = 0;
@@ -659,7 +670,10 @@ async function startRecording() {
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"
   ];
   if (!window.MediaRecorder) { setStatus("このブラウザは録画に対応していません", true); return; }
-  mimeType = candidates.find(t => MediaRecorder.isTypeSupported(t)) || "";
+  // v2.1：mp4 で映像が録れなかったスマホは、次から webm にする（11/27 本人のスマホで mp4 が音だけになった）
+  const avoidMp4 = localStorage.getItem("nr_avoid_mp4") === "1";
+  mimeType = candidates.filter(t => !(avoidMp4 && t.includes("mp4"))).find(t => MediaRecorder.isTypeSupported(t)) || "";
+  videoChecked = false; videoFails = 0;
 
   const free = await freeBytes();
   if (free !== null && free < MIN_FREE * 2) {
@@ -763,12 +777,18 @@ async function startSegment() {
   const rec = new MediaRecorder(stream, opts);
   seg.t0 = Date.now();
   rec.onstart = () => { seg.t0 = Date.now(); seg.offset = (seg.t0 - T0) / 1000; };
+  seg.probe = [];
   rec.ondataavailable = e => {
     if (!e.data || !e.data.size) return;
     const i = seg.n++;
     seg.size += e.data.size;
     seg.dur = (Date.now() - seg.t0) / 1000;
     writeChain = writeChain.then(() => dbPutChunk(seg, i, e.data)).catch(onWriteError);
+    // v2.1：はじめの約10秒ぶんで、映像が入っているかを確かめる
+    if (!videoChecked && seg.probe) {
+      seg.probe.push(e.data);
+      if (seg.dur >= 9) { const p = seg.probe; seg.probe = null; checkVideo(seg, rec, p); }
+    }
   };
   rec.onstop = () => {
     writeChain = writeChain.then(() => dbPutSeg(seg)).catch(onWriteError).then(refreshAfterStop);
@@ -777,6 +797,54 @@ async function startSegment() {
   rec.start(CHUNK_MS);
   recorder = rec;
   curSeg = seg;
+}
+
+// ---------- v2.1：映像が入っているかの見張り ----------
+// 11/27：本人のスマホで「mp4 で録れる」と返事があったのに、映像が入らず音だけの録画になった。
+// はじめの約10秒で ①大きさ（音だけなら0.1MBほど、映像があれば数MB）②中身（映像の幅）を確かめ、
+// 映像がなければ webm に切りかえて録り直す。それでもだめなら、画面と音で知らせる
+async function checkVideo(seg, rec, chunks) {
+  const blob = new Blob(chunks, { type: seg.type });
+  const perSec = blob.size / Math.max(1, seg.dur);
+  let width = -1;   // -1 = 中身を読めなかった（大きさだけで決める）
+  try {
+    const v = document.createElement("video");
+    v.muted = true; v.preload = "metadata";
+    const url = URL.createObjectURL(blob);
+    await new Promise(ok => { v.onloadedmetadata = ok; v.onerror = ok; setTimeout(ok, 4000); v.src = url; });
+    if (v.readyState >= 1) width = v.videoWidth;
+    v.removeAttribute("src"); v.load(); URL.revokeObjectURL(url);
+  } catch { /* 読めなくても大きさで決める */ }
+  const noVideo = perSec < 60000 || width === 0;   // 1秒に60KB未満（音だけの大きさ）か、映像の幅が0
+  if (!recording || rec !== recorder) return;       // もう止めた・次の区切りへ進んだ
+  if (!noVideo) { videoChecked = true; return; }
+  videoFails++;
+  if (mimeType.includes("mp4")) {
+    localStorage.setItem("nr_avoid_mp4", "1");
+    const next = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(t => MediaRecorder.isTypeSupported(t));
+    if (next) {
+      mimeType = next;
+      setStatus("⚠ mp4 では映像が録れていなかったので、webm 形式に切りかえて録り直しました（次からは最初から webm で録ります）", true);
+      recorder.stop();
+      startSegment().catch(() => restartAfterTrouble());
+      return;
+    }
+  }
+  videoChecked = true;   // 何度も知らせないように
+  noVideoAlarm();
+}
+$("btnNoVideo").onclick = () => $("noVideo").classList.remove("show");
+function noVideoAlarm() {
+  setStatus("⚠⚠ 映像が録れていません（音だけになっています）。録画を止めて、アプリを開き直してから撮り直してください", true);
+  setDim(false);
+  $("noVideo").classList.add("show");
+  try {   // 気づけるように、ピピピと3回鳴らす
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.4, 0.8].forEach(t => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 660; g.gain.value = 0.5;
+      o.connect(g); g.connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.25); });
+    setTimeout(() => ac.close(), 2000);
+  } catch { /* 音が出せなくても画面には出る */ }
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
 }
 
 let writeFailed = false;
@@ -1428,7 +1496,8 @@ function lapsFile(id, list) {
     "# このファイルと録画を「nami-cut」フォルダに入れて、",
     "# このファイルを「波を切り出す.bat」の上にドラッグしてください。",
     "",
-    "動画 = nami_" + id + "_*." + extOf(list[0].type),
+    // v2.1：途中で mp4→webm に切りかえた録画は、両方の形式が混ざるので「*」にする
+    "動画 = nami_" + id + "_*." + (new Set(list.map(x => extOf(x.type))).size > 1 ? "*" : extOf(list[0].type)),
     "# この録画は " + list.length + " 本に分かれています。全部入れてください：",
     ...list.map(x => "#   " + fileName(x)),
     "",
